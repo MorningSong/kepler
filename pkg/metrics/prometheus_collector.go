@@ -20,7 +20,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/version"
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/metrics/container"
@@ -42,28 +42,32 @@ type PrometheusExporter struct {
 	VMStatsCollector        prometheus.Collector
 	NodeStatsCollector      prometheus.Collector
 
-	// Lock to syncronize the collector update with prometheus exporter
+	// Lock to synchronize the collector update with prometheus exporter
 	Mx sync.Mutex
+
+	bpfSupportedMetrics bpf.SupportedMetrics
 }
 
 // NewPrometheusExporter creates a new prometheus exporter
-func NewPrometheusExporter() *PrometheusExporter {
-	return &PrometheusExporter{}
+func NewPrometheusExporter(bpfSupportedMetrics bpf.SupportedMetrics) *PrometheusExporter {
+	return &PrometheusExporter{
+		bpfSupportedMetrics: bpfSupportedMetrics,
+	}
 }
 
 // NewProcessCollector creates a new prometheus collector for process metrics
 func (e *PrometheusExporter) NewProcessCollector(processMetrics map[uint64]*stats.ProcessStats) {
-	e.ProcessStatsCollector = process.NewProcessCollector(processMetrics, &e.Mx)
+	e.ProcessStatsCollector = process.NewProcessCollector(processMetrics, &e.Mx, e.bpfSupportedMetrics)
 }
 
 // NewContainerCollector creates a new prometheus collector for container metrics
 func (e *PrometheusExporter) NewContainerCollector(containerMetrics map[string]*stats.ContainerStats) {
-	e.ContainerStatsCollector = container.NewContainerCollector(containerMetrics, &e.Mx)
+	e.ContainerStatsCollector = container.NewContainerCollector(containerMetrics, &e.Mx, e.bpfSupportedMetrics)
 }
 
 // NewVMCollector creates a new prometheus collector for vm metrics
 func (e *PrometheusExporter) NewVMCollector(vmMetrics map[string]*stats.VMStats) {
-	e.VMStatsCollector = virtualmachine.NewVMCollector(vmMetrics, &e.Mx)
+	e.VMStatsCollector = virtualmachine.NewVMCollector(vmMetrics, &e.Mx, e.bpfSupportedMetrics)
 }
 
 // NewNodeCollector creates a new prometheus collector for node metrics
@@ -79,32 +83,31 @@ func GetRegistry() *prometheus.Registry {
 }
 
 func (e *PrometheusExporter) RegisterMetrics() *prometheus.Registry {
-	registry := GetRegistry()
-	registry.MustRegister(version.NewCollector("kepler_exporter"))
+	r := GetRegistry()
 
 	if config.IsExposeProcessStatsEnabled() {
-		registry.MustRegister(e.ProcessStatsCollector)
+		r.MustRegister(e.ProcessStatsCollector)
 		klog.Infoln("Registered Process Prometheus metrics")
 	}
 
 	if config.IsExposeContainerStatsEnabled() {
-		registry.MustRegister(e.ContainerStatsCollector)
+		r.MustRegister(e.ContainerStatsCollector)
 		klog.Infoln("Registered Container Prometheus metrics")
 	}
 
 	if config.IsExposeVMStatsEnabled() {
-		registry.MustRegister(e.VMStatsCollector)
+		r.MustRegister(e.VMStatsCollector)
 		klog.Infoln("Registered VM Prometheus metrics")
 	}
 
-	registry.MustRegister(e.NodeStatsCollector)
+	r.MustRegister(e.NodeStatsCollector)
 	klog.Infoln("Registered Node Prometheus metrics")
 
 	// log prometheus errors
-	_, err := registry.Gather()
+	_, err := r.Gather()
 	if err != nil {
 		klog.Errorln(err)
 	}
 
-	return registry
+	return r
 }

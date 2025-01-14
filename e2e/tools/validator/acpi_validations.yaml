@@ -1,0 +1,14 @@
+validations:
+  - name: mock - node
+    actual: |
+      mock_acpi_power1_average/10^6
+    predicted: |
+      sum(
+        rate(
+          kepler_node_platform_joules_total{{
+            job="{metal_job_name}"
+          }}[{rate_interval}]
+        )
+      )
+    max_mse: 0.01
+    max_mape: 0.01

@@ -30,9 +30,9 @@ declare CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-kind}"
 declare CTR_CMD="${CTR_CMD:-docker}"
 declare IMAGE_TAG="${IMAGE_TAG:-devel}"
 declare IMAGE_REPO="${IMAGE_REPO:-localhost:5001}"
-declare ATTACHER_TAG="${ATTACHER_TAG:-libbpf}"
 declare OPTS="${OPTS:-}"
 declare NO_BUILDS="${NO_BUILDS:-false}"
+declare BUILD_CONTAINERIZED="${BUILD_CONTAINERIZED:-build_containerized}"
 
 build_manifest() {
 	$NO_BUILDS && {
@@ -40,7 +40,10 @@ build_manifest() {
 		return 0
 	}
 	header "Build Kepler Manifest"
-	run make build-manifest OPTS="$OPTS"
+	run make build-manifest \
+		OPTS="$OPTS" \
+		IMAGE_REPO="$IMAGE_REPO" \
+		IMAGE_TAG="$IMAGE_TAG"
 }
 
 build_kepler() {
@@ -49,10 +52,10 @@ build_kepler() {
 		ok "Skipping building of images"
 		return 0
 	}
-	run make build_containerized \
+	run make $BUILD_CONTAINERIZED \
 		IMAGE_REPO="$IMAGE_REPO" \
 		IMAGE_TAG="$IMAGE_TAG" \
-		ATTACHER_TAG="$ATTACHER_TAG"
+		VERSION="devel"
 }
 push_kepler() {
 	header "Push Kepler Image"
@@ -62,18 +65,12 @@ push_kepler() {
 	}
 	run make push-image \
 		IMAGE_REPO="$IMAGE_REPO" \
-		IMAGE_TAG="$IMAGE_TAG" \
-		ATTACHER_TAG="$ATTACHER_TAG"
+		IMAGE_TAG="$IMAGE_TAG"
 }
 run_kepler() {
 	header "Running Kepler"
 
 	[[ ! -d "$MANIFESTS_OUT_DIR" ]] && die "Directory ${MANIFESTS_OUT_DIR} DOES NOT exists. Run make generate first."
-
-	[[ "$CLUSTER_PROVIDER" == "microshift" ]] && {
-		sed "s/localhost:5001/registry:5000/g" "${MANIFESTS_OUT_DIR}"/deployment.yaml >"${MANIFESTS_OUT_DIR}"/deployment.yaml.tmp &&
-			mv "${MANIFESTS_OUT_DIR}"/deployment.yaml.tmp "${MANIFESTS_OUT_DIR}"/deployment.yaml
-	}
 
 	kubectl apply -f "${MANIFESTS_OUT_DIR}" || true
 }

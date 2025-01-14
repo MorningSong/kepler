@@ -20,7 +20,7 @@ import (
 	"strconv"
 
 	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/gpu"
+	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
 	"k8s.io/klog/v2"
 )
 
@@ -31,52 +31,10 @@ const (
 // SetMockedCollectorMetrics adds all metric to a process, otherwise it will not create the right usageMetric with all elements. The usageMetric is used in the Prediction Power Models
 // TODO: do not use a fixed usageMetric array in the power models, a structured data is more disarable.
 func SetMockedCollectorMetrics() {
-	if gpu.IsGPUCollectionSupported() {
-		err := gpu.Init() // create structure instances that will be accessed to create a processMetric
+	if gpu := acc.GetActiveAcceleratorByType(config.GPU); gpu != nil {
+		err := gpu.Device().Init() // create structure instances that will be accessed to create a processMetric
 		klog.Fatalln(err)
 	}
-	// initialize the Available metrics since they are used to create a new processMetrics instance
-	AvailableBPFHWCounters = []string{
-		config.CPUCycle,
-		config.CPUInstruction,
-		config.CacheMiss,
-	}
-	AvailableBPFSWCounters = []string{
-		config.CPUTime,
-		config.PageCacheHit,
-	}
-	AvailableCGroupMetrics = []string{
-		config.CgroupfsMemory,
-		config.CgroupfsKernelMemory,
-		config.CgroupfsTCPMemory,
-		config.CgroupfsCPU,
-		config.CgroupfsSystemCPU,
-		config.CgroupfsUserCPU,
-		config.CgroupfsReadIO,
-		config.CgroupfsWriteIO,
-		config.BlockDevicesIO,
-	}
-	// ProcessFeaturesNames is used by the nodeMetrics to extract the resource usage. Only the metrics in ProcessFeaturesNames will be used.
-	ProcessFeaturesNames = []string{}
-	ProcessFeaturesNames = append(ProcessFeaturesNames, AvailableBPFSWCounters...)
-	ProcessFeaturesNames = append(ProcessFeaturesNames, AvailableBPFHWCounters...)
-	ProcessFeaturesNames = append(ProcessFeaturesNames, AvailableCGroupMetrics...)
-
-	AvailableAbsEnergyMetrics = []string{
-		config.AbsEnergyInCore, config.AbsEnergyInDRAM, config.AbsEnergyInUnCore, config.AbsEnergyInPkg,
-		config.AbsEnergyInGPU, config.AbsEnergyInOther, config.AbsEnergyInPlatform,
-	}
-	AvailableDynEnergyMetrics = []string{
-		config.DynEnergyInCore, config.DynEnergyInDRAM, config.DynEnergyInUnCore, config.DynEnergyInPkg,
-		config.DynEnergyInGPU, config.DynEnergyInOther, config.DynEnergyInPlatform,
-	}
-	AvailableIdleEnergyMetrics = []string{
-		config.IdleEnergyInCore, config.IdleEnergyInDRAM, config.IdleEnergyInUnCore, config.IdleEnergyInPkg,
-		config.IdleEnergyInGPU, config.IdleEnergyInOther, config.IdleEnergyInPlatform,
-	}
-
-	NodeMetadataFeatureNames = []string{"cpu_architecture"}
-	NodeMetadataFeatureValues = []string{"Sandy Bridge"}
 }
 
 // CreateMockedProcessStats adds two containers with all metrics initialized

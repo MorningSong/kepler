@@ -20,52 +20,71 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"net/http"
+	"math"
 	"os"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/textparse"
+	log "github.com/sirupsen/logrus"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+// TestKeplerMetric represents the structure to test kepler metrics
 type TestKeplerMetric struct {
-	Metric   map[string][]float64
-	PodLists []string
-	Client   *kubernetes.Clientset
+	Metric    map[string][]float64
+	Client    *kubernetes.Clientset
+	Config    *rest.Config
+	Namespace string
+	Port      string
+	PodLists  []string
 }
 
-func NewTestKeplerMetric(kubeconfigPath string) (*TestKeplerMetric, error) {
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+// NewTestKeplerMetric creates a new TestKeplerMetric instance.
+func NewTestKeplerMetric(kubeconfigPath, namespace, port string) (*TestKeplerMetric, error) {
+	config, err := getConfig(kubeconfigPath)
 	if err != nil {
 		return nil, err
 	}
-
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
 	return &TestKeplerMetric{
-		Metric:   make(map[string][]float64),
-		PodLists: make([]string, 0),
-		Client:   clientset,
+		Metric:    make(map[string][]float64),
+		PodLists:  make([]string, 0),
+		Client:    clientset,
+		Config:    config,
+		Namespace: namespace,
+		Port:      port,
 	}, nil
 }
 
-func (kmc *TestKeplerMetric) UpdateMetricMap(key string, value float64) {
-	if _, ok := kmc.Metric[key]; !ok {
-		kmc.Metric[key] = []float64{}
+// getConfig create and returns a rest client configuration based on the provided kubeconfig path
+func getConfig(kubeconfigPath string) (*rest.Config, error) {
+	if kubeconfigPath != "" {
+		return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	}
+	return rest.InClusterConfig()
+}
+
+// UpdateMetricMap updates the metric map with a new value.
+func (kmc *TestKeplerMetric) UpdateMetricMap(key string, value float64) {
 	kmc.Metric[key] = append(kmc.Metric[key], value)
 }
 
-func (kmc *TestKeplerMetric) RetrivePodNames(ctx context.Context) error {
+// RetrievePodNames retrieves names of all pods in all namespaces.
+func (kmc *TestKeplerMetric) RetrievePodNames(ctx context.Context) error {
 	namespaces, err := kmc.Client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -74,6 +93,7 @@ func (kmc *TestKeplerMetric) RetrivePodNames(ctx context.Context) error {
 		ns := &namespaces.Items[i]
 		pods, err := kmc.Client.CoreV1().Pods(ns.Name).List(ctx, metav1.ListOptions{})
 		if err != nil {
+			log.Errorf("error retrieving pods in namespace %s: %v", ns.Name, err)
 			return err
 		}
 		for j := range pods.Items {
@@ -84,137 +104,219 @@ func (kmc *TestKeplerMetric) RetrivePodNames(ctx context.Context) error {
 	return nil
 }
 
+// getEnvOrDefault returns the value of an environment variable or a default value if not set.
 func getEnvOrDefault(envName, defaultValue string) string {
-	value, exists := os.LookupEnv(envName)
-	if !exists {
-		return defaultValue
+	if value, exists := os.LookupEnv(envName); exists {
+		return value
 	}
-	return value
+	return defaultValue
+}
+
+// GetMetrics reterives metrics from all pods in the "kepler" namespace.
+func (kmc *TestKeplerMetric) GetMetrics(ctx context.Context) error {
+	pods, err := kmc.Client.CoreV1().Pods(kmc.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Errorf("error retrieving pods in namespace %s : %v", kmc.Namespace, err)
+		return err
+	}
+
+	for j := range pods.Items {
+		pod := &pods.Items[j]
+		if err := kmc.retrieveMetrics(pod); err != nil {
+			log.Errorf("error retrieving metrics from pod %s: %v", pod.Name, err)
+			return err
+		}
+	}
+	return nil
+}
+
+// retrieveMetrics executes command on the given pod and retrieve metrics data.
+func (kmc *TestKeplerMetric) retrieveMetrics(pod *v1.Pod) error {
+	req := kmc.createExecRequest(pod)
+	exec, err := remotecommand.NewSPDYExecutor(kmc.Config, "GET", req.URL())
+	if err != nil {
+		return err
+	}
+	var stdout, stderr bytes.Buffer
+	err = exec.StreamWithContext(context.Background(), remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Tty:    false,
+	})
+	if err != nil {
+		return err
+	}
+	if stdout.Len() == 0 {
+		log.Warnf("received empty response from pod %s", pod.Name)
+		return nil
+	}
+	kmc.PromParse(stdout.Bytes())
+	return nil
+}
+
+// createExecRequest constructs a request for executing command inside a container in the pod.
+func (kmc *TestKeplerMetric) createExecRequest(pod *v1.Pod) *rest.Request {
+	return kmc.Client.CoreV1().RESTClient().Get().
+		Resource("pods").Name(pod.Name).
+		Namespace(kmc.Namespace).
+		SubResource("exec").
+		VersionedParams(&v1.PodExecOptions{
+			Command:   []string{"curl", "http://localhost:" + kmc.Port + "/metrics"},
+			Container: pod.Spec.Containers[0].Name,
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+}
+
+// PromParse parses Prometheus metrics and updates the map.
+func (kmc *TestKeplerMetric) PromParse(b []byte) {
+	symbolTable := labels.NewSymbolTable()
+	p := textparse.NewPromParser(b, symbolTable)
+	log.Info("Parsing Metrics...")
+	for {
+		et, err := p.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			log.Errorf("error parsing metric: %v", err)
+			continue
+		}
+		if et == textparse.EntrySeries {
+			kmc.processSeries(p)
+		}
+	}
+}
+
+// processSeries processes a single series of prometheus metrics data.
+func (kmc *TestKeplerMetric) processSeries(p textparse.Parser) {
+	var res labels.Labels
+	_, _, v := p.Series()
+	p.Metric(&res)
+	metricName := kmc.constructMetricName(res)
+	kmc.UpdateMetricMap(metricName, v)
+	res = res[:0]
+}
+
+// constructMetricName constructs a unique name for a metric based on its label.
+func (kmc *TestKeplerMetric) constructMetricName(res labels.Labels) string {
+	if res.Has("pod_name") {
+		return res.Get("__name__") + " @ " + res.Get("pod_name")
+	}
+	return res.Get("__name__")
+}
+
+// checkMetricValues verifies that specified metric exists and has nonzero values.
+func checkMetricValues(keplerMetric *TestKeplerMetric, metricName string, zeroAllowed bool) {
+	v, ok := keplerMetric.Metric[metricName]
+	Expect(ok).To(BeTrue(), "Metric %s should exist", metricName)
+
+	for _, val := range v {
+		if val == 0 {
+			if !zeroAllowed {
+				Expect(val).To(BeNumerically(">", float64(0)), "Value for metric %s should be greater than 0", metricName)
+			} else {
+				Skip("Skipping test as values for " + metricName + " are zero")
+			}
+		}
+	}
+}
+
+// noneZeroMetricValues verifies that specified metric exists and has nonzero values.
+// It returns true if no zero value is found.
+func noneZeroMetricValues(keplerMetric *TestKeplerMetric, metricName string) {
+	checkMetricValues(keplerMetric, metricName, false)
+}
+
+// allowZeroMetricValues verifies that specified metric exists and has nonzero values.
+// It returns true even if a zero value is found.
+func allowZeroMetricValues(keplerMetric *TestKeplerMetric, metricName string) {
+	checkMetricValues(keplerMetric, metricName, true)
+}
+
+// checkPodMetricValues iterates through the list of pods and checks for the presence and value of specified pod-level metric.
+func checkPodMetricValues(keplerMetric *TestKeplerMetric, metricName string, zeroAllowed bool) {
+	// retry 3 times to get the metrics, with exponential backoff
+	retry := 0
+	sum := 0.0
+	for retry < 5 {
+		for _, podName := range keplerMetric.PodLists {
+			metricKey := metricName + " @ " + podName
+			v, ok := keplerMetric.Metric[metricKey]
+			Expect(ok).To(BeTrue(), "Metric %s should exists for pod %s", metricName, podName)
+			for _, val := range v {
+				sum += val
+			}
+		}
+		if sum > 0 || zeroAllowed {
+			break
+		} else {
+			retry += 1
+			log.Infof("Retrying to get metrics for %s, retry count: %d", metricName, retry)
+			// exponential backoff
+			time.Sleep(time.Duration(math.Pow(2, float64(retry))) * time.Second)
+		}
+	}
+	if sum == 0 {
+		if !zeroAllowed {
+			Expect(sum).To(BeNumerically(">", float64(0)), "Pod value for metric %s should be greater than 0", metricName)
+		} else {
+			Skip("Skipping test as values for " + metricName + " are zero")
+		}
+	}
+}
+
+// noneZeroPodMetricValues iterates through the list of pods and checks for the presence and value of specified pod-level metric.
+// It returns true if no zero value is found.
+func noneZeroPodMetricValues(keplerMetric *TestKeplerMetric, metricName string) {
+	checkPodMetricValues(keplerMetric, metricName, false)
+}
+
+// allowZeroPodMetricValues iterates through the list of pods and checks for the presence and value of specified pod-level metric.
+// It returns true even if a zero value is found.
+func allowZeroPodMetricValues(keplerMetric *TestKeplerMetric, metricName string) {
+	checkPodMetricValues(keplerMetric, metricName, true)
 }
 
 var _ = Describe("Metrics check should pass", Ordered, func() {
-
-	var keplerMetric *TestKeplerMetric
-
 	_ = BeforeAll(func() {
-		var err error
-		kubeconfigPath := getEnvOrDefault("KUBECONFIG", "/tmp/.kube/config")
-		keplerMetric, err = NewTestKeplerMetric(kubeconfigPath)
+		err := keplerMetric.GetMetrics(ctx)
 		Expect(err).NotTo(HaveOccurred())
-
-		ctx := context.Background()
-		err = keplerMetric.RetrivePodNames(ctx)
-		Expect(err).NotTo(HaveOccurred())
-
-		reader := bytes.NewReader([]byte{})
-		req, err := http.NewRequest("GET", "http://"+address+"/metrics", reader)
-		Expect(err).NotTo(HaveOccurred())
-		req.Header.Set("Accept", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
-		Expect(resp.StatusCode).To(Equal(http.StatusOK))
-		body, err := io.ReadAll(resp.Body)
-		Expect(err).NotTo(HaveOccurred())
-		// ref https://github.com/prometheus/prometheus/blob/main/model/textparse/promparse_test.go
-		var res labels.Labels
-		p := textparse.NewPromParser(body)
-		fmt.Println("=============================================")
-		fmt.Println("Parsing Metrics...")
-		for {
-			et, err := p.Next()
-			if errors.Is(err, io.EOF) {
-				fmt.Printf("error: %v\n", err)
-				break
-			}
-			switch et {
-			case textparse.EntrySeries:
-				m, _, v := p.Series()
-				p.Metric(&res)
-				if res.Has("pod_name") {
-					keplerMetric.UpdateMetricMap(res.Get("__name__")+" @ "+res.Get("pod_name"), v)
-				} else {
-					keplerMetric.UpdateMetricMap(res.Get("__name__"), v)
-				}
-				fmt.Printf("metric(with lables): %s\nvalue: %f\n", m, v)
-				res = res[:0]
-			case textparse.EntryType:
-				_, t := p.Type()
-				fmt.Printf("type: %s\n", t)
-			case textparse.EntryHelp:
-				m, h := p.Help()
-				fmt.Println("\n------------------------------------------")
-				fmt.Printf("metric: %s\nhelp: %s\n", m, h)
-			}
-		}
-		fmt.Println("=============================================")
-		fmt.Println("Dump saved metrics...")
-		for k, v := range keplerMetric.Metric {
-			fmt.Printf("metric: %s, value: %v\n", k, v)
-		}
 	})
 
-	_ = DescribeTable("Check node level metrics for details",
-		func(metrics string) {
-			v, ok := keplerMetric.Metric[metrics]
-			Expect(ok).To(BeTrue())
-			nonzeroFound := false
-			for _, val := range v {
-				if val > 0 {
-					nonzeroFound = true
-					break
-				}
-			}
-			if !nonzeroFound {
-				Skip("Skip as " + metrics + " is zero")
-			}
-			Expect(nonzeroFound).To(BeTrue())
-
-			// TODO: check value in details base on cgroup and gpu etc...
-			// so far just base check as compare with zero by default
+	_ = DescribeTable("Check node level metrics for details, non zero value metric should be found",
+		func(metricName string) {
+			noneZeroMetricValues(keplerMetric, metricName)
 		},
-		EntryDescription("Checking %s"),
-		Entry(nil, "kepler_exporter_build_info"),        // only one
-		Entry(nil, "kepler_node_core_joules_total"),     // node level check by instance
-		Entry(nil, "kepler_node_dram_joules_total"),     // node level check by instance
-		Entry(nil, "kepler_node_info"),                  // node level missing labels
-		Entry(nil, "kepler_node_package_joules_total"),  // node levelcheck by instance
-		Entry(nil, "kepler_node_platform_joules_total"), // node levelcheck by instance
-		Entry(nil, "kepler_node_uncore_joules_total"),   // node levelcheck by instance
+		Entry(nil, "kepler_exporter_build_info"),       // only one
+		Entry(nil, "kepler_node_core_joules_total"),    // node level
+		Entry(nil, "kepler_node_dram_joules_total"),    // node level
+		Entry(nil, "kepler_node_info"),                 // node level
+		Entry(nil, "kepler_node_package_joules_total"), // node level
 	)
 
-	_ = DescribeTable("Check pod level metrics for details",
-		func(metrics string) {
-			nonzeroFound := false
-			var value float64
-			for _, podname := range keplerMetric.PodLists {
-				v, ok := keplerMetric.Metric[metrics+" @ "+podname]
-				Expect(ok).To(BeTrue())
-				for _, val := range v {
-					if val > 0 {
-						nonzeroFound = true
-						value = val
-						break
-					}
-				}
-				if !nonzeroFound {
-					fmt.Printf("Skip as %s for %s is zero\n", metrics, podname)
-				} else {
-					break
-				}
-				// TODO: check value in details base on cgroup and gpu etc...
-				// so far just base check as compare with zero by default
-			}
-			if !nonzeroFound {
-				Skip("skip as " + metrics + " for all pods are zero")
-			}
-			Expect(value).To(BeNumerically(">", 0))
+	_ = DescribeTable("Check node level metrics for details, zero value metric can be found",
+		func(metricName string) {
+			allowZeroMetricValues(keplerMetric, metricName)
 		},
-		EntryDescription("Checking %s"),
+		Entry(nil, "kepler_node_platform_joules_total"), // node level
+		Entry(nil, "kepler_node_uncore_joules_total"),   // node level
+	)
+
+	_ = DescribeTable("Check pod level metrics for details, no zero value metric should be found",
+		func(metricName string) {
+			noneZeroPodMetricValues(keplerMetric, metricName)
+		},
 		Entry(nil, "kepler_container_core_joules_total"),    // pod level
 		Entry(nil, "kepler_container_dram_joules_total"),    // pod level
 		Entry(nil, "kepler_container_joules_total"),         // pod level
 		Entry(nil, "kepler_container_package_joules_total"), // pod level
-		Entry(nil, "kepler_container_uncore_joules_total"),  // pod level
+	)
+
+	_ = DescribeTable("Check pod level metrics for details, zero value metric can be found",
+		func(metricName string) {
+			allowZeroPodMetricValues(keplerMetric, metricName)
+		},
+		Entry(nil, "kepler_container_uncore_joules_total"), // pod level
 	)
 })

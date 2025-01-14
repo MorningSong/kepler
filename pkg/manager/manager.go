@@ -19,18 +19,16 @@ package manager
 import (
 	"time"
 
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/collector"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/kubernetes"
 	exporter "github.com/sustainable-computing-io/kepler/pkg/metrics"
-)
-
-var (
-	samplePeriod = time.Duration(config.SamplePeriodSec * 1000 * uint64(time.Millisecond))
+	"k8s.io/klog/v2"
 )
 
 type CollectorManager struct {
-	// StatsCollector is resposible to collect resource and energy consumption metrics and calculate them when needed
+	// StatsCollector is responsible to collect resource and energy consumption metrics and calculate them when needed
 	StatsCollector *collector.Collector
 
 	// PrometheusCollector implements the external Collector interface provided by the Prometheus client
@@ -40,20 +38,26 @@ type CollectorManager struct {
 	Watcher *kubernetes.ObjListWatcher
 }
 
-func New() *CollectorManager {
+func New(bpfExporter bpf.Exporter) *CollectorManager {
+	var err error
 	manager := &CollectorManager{}
-	manager.StatsCollector = collector.NewCollector()
-	manager.PrometheusCollector = exporter.NewPrometheusExporter()
+	supportedMetrics := bpfExporter.SupportedMetrics()
+	manager.StatsCollector = collector.NewCollector(bpfExporter)
+	manager.PrometheusCollector = exporter.NewPrometheusExporter(supportedMetrics)
 	// the collector and prometheusExporter share structures and collections
 	manager.PrometheusCollector.NewProcessCollector(manager.StatsCollector.ProcessStats)
 	manager.PrometheusCollector.NewContainerCollector(manager.StatsCollector.ContainerStats)
 	manager.PrometheusCollector.NewVMCollector(manager.StatsCollector.VMStats)
 	manager.PrometheusCollector.NewNodeCollector(&manager.StatsCollector.NodeStats)
-	// configure the wather
-	manager.Watcher = kubernetes.NewObjListWatcher()
+	// configure the watcher
+	if manager.Watcher, err = kubernetes.NewObjListWatcher(supportedMetrics); err != nil {
+		klog.Errorf("could not create the watcher, %v", err)
+	}
 	manager.Watcher.Mx = &manager.PrometheusCollector.Mx
-	manager.Watcher.ContainerStats = &manager.StatsCollector.ContainerStats
-	manager.Watcher.Run()
+	manager.Watcher.ContainerStats = manager.StatsCollector.ContainerStats
+	if err = manager.Watcher.Run(); err != nil {
+		klog.Errorf("could not run the watcher %v", err)
+	}
 	return manager
 }
 
@@ -61,6 +65,8 @@ func (m *CollectorManager) Start() error {
 	if err := m.StatsCollector.Initialize(); err != nil {
 		return err
 	}
+
+	samplePeriod := time.Duration((config.SamplePeriodSec()) * uint64(time.Second))
 
 	go func() {
 		ticker := time.NewTicker(samplePeriod)
@@ -76,4 +82,8 @@ func (m *CollectorManager) Start() error {
 	}()
 
 	return nil
+}
+
+func (m *CollectorManager) Stop() {
+	m.Watcher.ShutDownWithDrain()
 }

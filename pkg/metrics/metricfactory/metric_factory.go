@@ -20,17 +20,30 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/metrics/consts"
+	modeltypes "github.com/sustainable-computing-io/kepler/pkg/model/types"
+	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
+	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
+	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
 	"k8s.io/klog/v2"
 )
 
 func EnergyMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
 	descriptions = make(map[string]*prometheus.Desc)
 	for _, name := range consts.EnergyMetricNames {
-		source := "intel_rapl"
-		if strings.Contains(name, "gpu") {
-			source = "nvidia"
+		// set the default source to trained power model
+		source := modeltypes.TrainedPowerModelSource
+		if strings.Contains(name, config.GPU) {
+			if gpu := acc.GetActiveAcceleratorByType(config.GPU); gpu != nil {
+				source = gpu.Device().Name()
+			}
+		} else if strings.Contains(name, config.PLATFORM) && platform.IsSystemCollectionSupported() {
+			source = platform.GetSourceName()
+		} else if components.IsSystemCollectionSupported() {
+			// TODO: need to update condition when we have more type of energy metric such as network, disk.
+			source = components.GetSourceName()
 		}
 		descriptions[name] = energyMetricsPromDesc(context, name, source)
 	}
@@ -55,58 +68,30 @@ func energyMetricsPromDesc(context, name, source string) (desc *prometheus.Desc)
 	return MetricsPromDesc(context, name, consts.EnergyMetricNameSuffix, source, labels)
 }
 
-func HCMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
+func HCMetricsPromDesc(context string, bpfSupportedMetrics bpf.SupportedMetrics) (descriptions map[string]*prometheus.Desc) {
 	descriptions = make(map[string]*prometheus.Desc)
-	if config.IsHCMetricsEnabled() {
-		for _, name := range consts.HCMetricNames {
-			descriptions[name] = resMetricsPromDesc(context, name, "bpf")
-		}
-	}
-	return descriptions
-}
-
-func SCMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
-	descriptions = make(map[string]*prometheus.Desc)
-	for _, name := range consts.SCMetricNames {
+	for name := range bpfSupportedMetrics.HardwareCounters {
 		descriptions[name] = resMetricsPromDesc(context, name, "bpf")
 	}
 	return descriptions
 }
 
-func IRQMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
+func SCMetricsPromDesc(context string, bpfSupportedMetrics bpf.SupportedMetrics) (descriptions map[string]*prometheus.Desc) {
 	descriptions = make(map[string]*prometheus.Desc)
-	if config.IsIRQCounterMetricsEnabled() {
-		for _, name := range consts.IRQMetricNames {
-			descriptions[name] = resMetricsPromDesc(context, name, "bpf")
+	for name := range bpfSupportedMetrics.SoftwareCounters {
+		descriptions[name] = resMetricsPromDesc(context, name, "bpf")
+	}
+	return descriptions
+}
+
+func GPUUsageMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
+	descriptions = make(map[string]*prometheus.Desc)
+	if config.IsGPUEnabled() {
+		if gpu := acc.GetActiveAcceleratorByType(config.GPU); gpu != nil {
+			for _, name := range consts.GPUMetricNames {
+				descriptions[name] = resMetricsPromDesc(context, name, gpu.Device().Name())
+			}
 		}
-	}
-	return descriptions
-}
-
-func CGroupMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
-	descriptions = make(map[string]*prometheus.Desc)
-	if config.IsCgroupMetricsEnabled() {
-		for _, name := range consts.CGroupMetricNames {
-			descriptions[name] = resMetricsPromDesc(context, name, "cgroup")
-		}
-	}
-	return descriptions
-}
-
-func QATMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
-	descriptions = make(map[string]*prometheus.Desc)
-	if config.IsExposeQATMetricsEnabled() {
-		name := config.QATUtilization
-		descriptions[name] = resMetricsPromDesc(context, name, "intel_qta")
-	}
-	return descriptions
-}
-
-func NodeCPUFrequencyMetricsPromDesc(context string) (descriptions map[string]*prometheus.Desc) {
-	descriptions = make(map[string]*prometheus.Desc)
-	if config.IsExposeCPUFrequencyMetricsEnabled() {
-		name := config.CPUFrequency
-		descriptions[name] = resMetricsPromDesc(context, name, "")
 	}
 	return descriptions
 }
@@ -126,12 +111,18 @@ func resMetricsPromDesc(context, name, source string) (desc *prometheus.Desc) {
 		klog.Errorf("Unexpected prometheus context: %s", context)
 		return
 	}
+	// if this is a GPU metric, we need to add the GPU ID label
+	for _, gpuMetric := range consts.GPUMetricNames {
+		if name == gpuMetric {
+			labels = append(labels, consts.GPUResUtilLabels...)
+		}
+	}
 	return MetricsPromDesc(context, name, consts.UsageMetricNameSuffix, source, labels)
 }
 
-func MetricsPromDesc(context, name, sufix, source string, labels []string) (desc *prometheus.Desc) {
+func MetricsPromDesc(context, name, suffix, source string, labels []string) (desc *prometheus.Desc) {
 	return prometheus.NewDesc(
-		prometheus.BuildFQName(consts.MetricsNamespace, context, name+sufix),
+		prometheus.BuildFQName(consts.MetricsNamespace, context, name+suffix),
 		"Aggregated value in "+name+" value from "+source,
 		labels,
 		prometheus.Labels{"source": source},

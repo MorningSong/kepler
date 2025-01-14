@@ -1,33 +1,21 @@
 name: local dev env validation
 # for developer local environment script or test usage
-on:
+on: # yamllint disable-line rule:truthy
   workflow_call:
 
-jobs:
-  unit_test_mac:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4.1.1
-      with:
-        persist-credentials: false
-        fetch-depth: 0
-    - uses: actions/setup-go@v5
-      with:
-        go-version-file: go.mod
-    - name: Prepare environment 
-      run: |
-          brew install cpuid
-          cd doc/ && sudo ./dev/prepare_dev_env.sh && cd - 
-          git config --global --add safe.directory /kepler
-    - name: Run 
-      run: make test-mac-verbose
+permissions: read-all
 
+jobs:
   local_env:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         kube_provider: [kind]
+    env:
+      CTR_CMD: docker
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4
       - name: local cluster set up
         run: make cluster-up
+      - name: local container test
+        run: make container_test

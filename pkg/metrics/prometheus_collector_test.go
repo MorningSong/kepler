@@ -30,10 +30,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/collector"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
+	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/model"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/gpu"
+
+	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
 )
@@ -61,22 +64,24 @@ var _ = Describe("Test Prometheus Collector Unit", func() {
 		// we need to disable the system real time power metrics for testing since we add mock values or use power model estimator
 		components.SetIsSystemCollectionSupported(false)
 		platform.SetIsSystemCollectionSupported(false)
-		if gpu.IsGPUCollectionSupported() {
-			err := gpu.Init() // create structure instances that will be accessed to create a containerMetric
+		if gpu := acc.GetActiveAcceleratorByType(config.GPU); gpu != nil {
+			err := gpu.Device().Init() // create structure instances that will be accessed to create a containerMetric
 			Expect(err).NotTo(HaveOccurred())
 		}
 		stats.SetMockedCollectorMetrics()
 		processStats := stats.CreateMockedProcessStats(2)
 		nodeStats := stats.CreateMockedNodeStats()
 
-		metricCollector := collector.NewCollector()
+		bpfExporter := bpf.NewMockExporter(bpf.DefaultSupportedMetrics())
+		metricCollector := collector.NewCollector(bpfExporter)
 		metricCollector.ProcessStats = processStats
 		metricCollector.NodeStats = nodeStats
 		// aggregate processes' resource utilization metrics to containers, virtual machines and nodes
 		metricCollector.AggregateProcessResourceUtilizationMetrics()
 
 		// the collector and prometheusExporter share structures and collections
-		exporter := NewPrometheusExporter()
+		bpfSupportedMetrics := bpfExporter.SupportedMetrics()
+		exporter := NewPrometheusExporter(bpfSupportedMetrics)
 		exporter.NewProcessCollector(metricCollector.ProcessStats)
 		exporter.NewContainerCollector(metricCollector.ContainerStats)
 		exporter.NewVMCollector(metricCollector.VMStats)
@@ -84,9 +89,7 @@ var _ = Describe("Test Prometheus Collector Unit", func() {
 
 		nodeStats.UpdateDynEnergy()
 
-		model.CreatePowerEstimatorModels(stats.ProcessFeaturesNames,
-			stats.NodeMetadataFeatureNames,
-			stats.NodeMetadataFeatureValues)
+		model.CreatePowerEstimatorModels(stats.GetProcessFeatureNames())
 		model.UpdateProcessEnergy(processStats, &nodeStats)
 
 		// get metrics from prometheus

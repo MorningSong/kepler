@@ -1,0 +1,108 @@
+name: vm
+
+services:
+  kepler:
+    image: quay.io/sustainable_computing_io/kepler:latest
+    ports:
+      - 9100:9100
+    privileged: true
+    pid: host
+    networks:
+      - kepler-network
+      - model-server-network # to support kepler -> model-server use-case
+    volumes:
+      - type: bind
+        source: /proc
+        target: /proc
+      - type: bind
+        source: /sys
+        target: /sys
+      - type: bind
+        source: ./kepler/etc/kepler
+        target: /etc/kepler
+
+      # NOTE: use the models from the local repo
+      - type: bind
+        source: ../../../../data
+        target: /var/lib/kepler/data
+
+        # NOTE: for estimator - kepler communication
+      - kepler-tmp:/tmp
+
+    healthcheck:
+      test: curl -f http://localhost:9100/metrics || exit 1
+      interval: ${HEALTHCHECK_INTERVAL:-50s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-30s}
+      retries: ${HEALTHCHECK_RETRIES:-3}
+      start_period: ${HEALTHCHECK_START_PERIOD:-1m}
+
+    cap_add:
+      - ALL
+
+    entrypoint:
+      - /usr/bin/bash
+      - -c
+
+    command:
+      - |
+        echo "Waiting for model-server"
+        until [[ "$(curl -s -o /dev/null -w "%{http_code}" http://model-server:8100/best-models)" -eq 200 ]]; do
+          echo " ... waiting for model-server"
+          sleep 1
+        done
+
+        echo "Waiting for estimator socket"
+        until [[ -e /tmp/estimator.sock ]]; do
+          echo " ... waiting for estimator socket"
+          sleep 1
+        done
+
+        echo "starting kepler ..."
+        echo " * power-meter disabled: $$DISABLE_POWER_METER"
+        set -x
+        /usr/bin/kepler \
+          -address="0.0.0.0:9100" \
+          -disable-power-meter=$$DISABLE_POWER_METER \
+          -v="8"
+
+    environment:
+      - DISABLE_POWER_METER=${DISABLE_POWER_METER:-false}
+
+  estimator:
+    image: quay.io/sustainable_computing_io/kepler_model_server:v0.7.11-2
+    command: [estimator, -l, debug]
+    volumes:
+      - type: bind
+        source: ./kepler/etc/kepler
+        target: /etc/kepler
+
+      - kepler-tmp:/tmp
+      - estimator-mnt:/mnt
+    networks:
+      - kepler-network
+      - model-server-network
+
+  model-server:
+    image: quay.io/sustainable_computing_io/kepler_model_server:v0.7.11-2
+    command: [model-server, -l, debug]
+    ports:
+      - 8100:8100
+    volumes:
+      - type: bind
+        source: ./kepler/etc/kepler
+        target: /etc/kepler
+      - model-server-mnt:/mnt
+    networks:
+      - model-server-network
+
+volumes:
+  # for kepler - estimator sock
+  kepler-tmp:
+
+  # for downloading models
+  estimator-mnt:
+  model-server-mnt:
+
+networks:
+  kepler-network:
+  model-server-network:

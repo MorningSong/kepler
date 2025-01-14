@@ -28,10 +28,15 @@ declare -r PROJECT_ROOT
 
 # NOTE: these settings can be overridden in the .env file
 declare -r LOCAL_DEV_CLUSTER_DIR="${LOCAL_DEV_CLUSTER_DIR:-"$PROJECT_ROOT/local-dev-cluster"}"
-declare -r LOCAL_DEV_CLUSTER_VERSION="${LOCAL_DEV_CLUSTER_VERSION:-v0.0.3}"
-
-# Supported CLUSTER_PROVIDER are kind,microshift
+declare -r LOCAL_DEV_CLUSTER_VERSION="${LOCAL_DEV_CLUSTER_VERSION:-v0.0.5}"
+declare -r KIND_WORKER_NODES=${KIND_WORKER_NODES:-2}
+declare -r PROMETHEUS_ENABLE=${PROMETHEUS_ENABLE:-false}
+declare -r GRAFANA_ENABLE=${GRAFANA_ENABLE:-false}
+# Supported CLUSTER_PROVIDER are kind
 export CLUSTER_PROVIDER=${CLUSTER_PROVIDER:-kind}
+export KIND_WORKER_NODES
+export PROMETHEUS_ENABLE
+export GRAFANA_ENABLE
 
 clone_local_dev_cluster() {
 	if [ -d "$LOCAL_DEV_CLUSTER_DIR" ]; then

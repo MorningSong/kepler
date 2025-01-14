@@ -22,19 +22,20 @@ import (
 	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/model/types"
+	"github.com/sustainable-computing-io/kepler/pkg/node"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
 	"k8s.io/klog/v2"
 )
 
-var (
-	// the absulute power model includes both the absolute and idle power consumption
-	NodeComponentPowerModel PowerMoldelInterface
-)
+// the absolute power model includes both the absolute and idle power consumption
+var nodeComponentPowerModel PowerModelInterface
 
 // createNodeComponentPowerModelConfig: the node component power model url must be set by default.
-func createNodeComponentPowerModelConfig(nodeFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues []string) *types.ModelConfig {
-	modelConfig := CreatePowerModelConfig(config.NodeComponentsPowerKey)
+func createNodeComponentPowerModelConfig(nodeFeatureNames []string) *types.ModelConfig {
+	systemMetaDataFeatureNames := node.MetadataFeatureNames()
+	systemMetaDataFeatureValues := node.MetadataFeatureValues()
+	modelConfig := CreatePowerModelConfig(config.NodeComponentsPowerKey())
 	if modelConfig.InitModelURL == "" {
 		modelConfig.InitModelFilepath = config.GetDefaultPowerModelURL(modelConfig.ModelOutputType.String(), types.ComponentEnergySource)
 	}
@@ -45,43 +46,46 @@ func createNodeComponentPowerModelConfig(nodeFeatureNames, systemMetaDataFeature
 	return modelConfig
 }
 
-// CreateNodeComponentPoweEstimatorModel only create a new power model estimater if node components power metrics are not available
-func CreateNodeComponentPoweEstimatorModel(nodeFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues []string) {
+// CreateNodeComponentPowerEstimatorModel only create a new power model estimator if node components power metrics are not available
+func CreateNodeComponentPowerEstimatorModel(nodeFeatureNames []string) {
 	var err error
 	if !components.IsSystemCollectionSupported() {
-		modelConfig := createNodeComponentPowerModelConfig(nodeFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues)
+		modelConfig := createNodeComponentPowerModelConfig(nodeFeatureNames)
 		// init func for NodeComponentPower
-		NodeComponentPowerModel, err = createPowerModelEstimator(modelConfig)
+		nodeComponentPowerModel, err = createPowerModelEstimator(modelConfig)
 		if err == nil {
 			klog.V(1).Infof("Using the %s Power Model to estimate Node Component Power", modelConfig.ModelType.String()+"/"+modelConfig.ModelOutputType.String())
 		} else {
 			klog.Infof("Failed to create %s Power Model to estimate Node Component Power: %v\n", modelConfig.ModelType.String()+"/"+modelConfig.ModelOutputType.String(), err)
 		}
+	} else {
+		klog.Infof("Skipping creation of Node Component Power Model since the system collection is supported")
+		return
 	}
 }
 
 // IsNodeComponentPowerModelEnabled returns if the estimator has been enabled or not
 func IsNodeComponentPowerModelEnabled() bool {
-	if NodePlatformPowerModel == nil {
+	if nodeComponentPowerModel == nil {
 		return false
 	}
-	return NodeComponentPowerModel.IsEnabled()
+	return nodeComponentPowerModel.IsEnabled()
 }
 
 // GetNodeComponentPowers returns estimated RAPL power for the node
 func GetNodeComponentPowers(nodeMetrics *stats.NodeStats, isIdlePower bool) (nodeComponentsEnergy map[int]source.NodeComponentsEnergy) {
-	if NodeComponentPowerModel == nil {
+	if nodeComponentPowerModel == nil {
 		klog.Errorln("Node Component Power Model was not created")
 	}
 	nodeComponentsEnergy = map[int]source.NodeComponentsEnergy{}
 	// assuming that the absolute power is always called before estimating idle power, we only add feature values for absolute power as it also initialize the idle feature values
 	if !isIdlePower {
 		// reset power model features sample list for new estimation
-		NodeComponentPowerModel.ResetSampleIdx()
-		featureValues := nodeMetrics.ToEstimatorValues(NodeComponentPowerModel.GetNodeFeatureNamesList(), true) // add container features with normalized values
-		NodeComponentPowerModel.AddNodeFeatureValues(featureValues)                                             // add samples to estimation
+		nodeComponentPowerModel.ResetSampleIdx()
+		featureValues := nodeMetrics.ToEstimatorValues(nodeComponentPowerModel.GetNodeFeatureNamesList(), true) // add container features with normalized values
+		nodeComponentPowerModel.AddNodeFeatureValues(featureValues)                                             // add samples to estimation
 	}
-	powers, err := NodeComponentPowerModel.GetComponentsPower(isIdlePower)
+	powers, err := nodeComponentPowerModel.GetComponentsPower(isIdlePower)
 	if err != nil {
 		klog.Infof("Failed to get node components power %v\n", err)
 		return
@@ -93,22 +97,22 @@ func GetNodeComponentPowers(nodeMetrics *stats.NodeStats, isIdlePower bool) (nod
 	return
 }
 
-// UpdateNodeComponentIdleEnergy sets the power model samples, get absolute powers, and set gauge value for each component energy
+// UpdateNodeComponentEnergy sets the power model samples, get absolute powers, and set gauge value for each component energy
 func UpdateNodeComponentEnergy(nodeMetrics *stats.NodeStats) {
-	addEnergy(nodeMetrics, stats.AvailableAbsEnergyMetrics, absPower)
+	addEnergy(nodeMetrics, nodeMetrics.AbsEnergyMetrics(), absPower)
 }
 
 // UpdateNodeComponentIdleEnergy sets the power model samples to zeros, get idle powers, and set gauge value for each component idle energy
 func UpdateNodeComponentIdleEnergy(nodeMetrics *stats.NodeStats) {
-	addEnergy(nodeMetrics, stats.AvailableIdleEnergyMetrics, idlePower)
+	addEnergy(nodeMetrics, nodeMetrics.IdleEnergyMetrics(), idlePower)
 }
 
 func addEnergy(nodeMetrics *stats.NodeStats, metrics []string, isIdle bool) {
 	for socket, power := range GetNodeComponentPowers(nodeMetrics, isIdle) {
 		strID := fmt.Sprintf("%d", socket)
-		nodeMetrics.EnergyUsage[metrics[0]].SetDeltaStat(strID, power.Core*config.SamplePeriodSec)
-		nodeMetrics.EnergyUsage[metrics[1]].SetDeltaStat(strID, power.DRAM*config.SamplePeriodSec)
-		nodeMetrics.EnergyUsage[metrics[2]].SetDeltaStat(strID, power.Uncore*config.SamplePeriodSec)
-		nodeMetrics.EnergyUsage[metrics[3]].SetDeltaStat(strID, power.Pkg*config.SamplePeriodSec)
+		nodeMetrics.EnergyUsage[metrics[0]].SetDeltaStat(strID, power.Core*config.SamplePeriodSec())
+		nodeMetrics.EnergyUsage[metrics[1]].SetDeltaStat(strID, power.DRAM*config.SamplePeriodSec())
+		nodeMetrics.EnergyUsage[metrics[2]].SetDeltaStat(strID, power.Uncore*config.SamplePeriodSec())
+		nodeMetrics.EnergyUsage[metrics[3]].SetDeltaStat(strID, power.Pkg*config.SamplePeriodSec())
 	}
 }

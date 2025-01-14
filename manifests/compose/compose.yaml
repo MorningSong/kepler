@@ -1,0 +1,52 @@
+name: kepler
+include:
+  - path:
+      - ./monitoring/compose.yaml
+      - ./default/override.yaml
+
+services:
+  ### 📦 kepler latest without any modifications
+  kepler-latest:
+    image: quay.io/sustainable_computing_io/kepler:latest
+    privileged: true
+    pid: host
+    networks:
+      - kepler-network
+    cap_add:
+      - ALL
+    ports:
+      - 9288:8888
+
+    volumes:
+      - type: bind
+        source: /proc
+        target: /proc
+      - type: bind
+        source: /sys
+        target: /sys
+      - type: bind
+        source: ./default/kepler/etc/kepler
+        target: /etc/kepler
+
+    entrypoint: [/usr/bin/bash, -c]
+    command:
+      - |
+        echo Starting kepler;
+        # NOTE: uncomment to wait for estimator container
+        # echo waiting for estimator socket to be ready;
+        # until [[ -e /tmp/estimator.sock ]]; do
+        #   echo " ... waiting for socket";
+        #   sleep 1;
+        # done;
+        set -x;
+        /usr/bin/kepler \
+          -address "0.0.0.0:8888" \
+          -disable-power-meter=$$DISABLE_POWER_METER \
+          -v "8" \
+          -enable-gpu=false
+
+    environment:
+      - DISABLE_POWER_METER=${DISABLE_POWER_METER:-false}
+
+networks:
+  kepler-network:

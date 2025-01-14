@@ -1,5 +1,5 @@
 /*
-Copyright 2021.
+Copyright 2021-2024
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/model/estimator/local"
+	"github.com/sustainable-computing-io/kepler/pkg/model/estimator/local/regressor"
 	"github.com/sustainable-computing-io/kepler/pkg/model/estimator/sidecar"
 	"github.com/sustainable-computing-io/kepler/pkg/model/types"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
@@ -29,32 +30,29 @@ import (
 )
 
 const (
-	idlePower = true  // idlePower is used to define if the a function will update idle power
-	absPower  = false // absPower is used to define if the a function will NOT update idle power, but instead an absulute power
-	gauge     = true  // gauge is used to define if the a function will update a gauge value
-	counter   = false // gauge is used to define if the a function will NOT update a gauge value, but instead a counter value
+	idlePower              = true  // idlePower is used to define if the function will update idle power
+	absPower               = false // absPower is used to define if the function will NOT update idle power, but instead an absolute power
+	gauge                  = true  // gauge is used to define if the function will update a gauge value
+	counter                = false // counter is used to define if the function will update a counter value
+	estimatorSidecarSocket = "/tmp/estimator.sock"
 )
 
-var (
-	EstimatorSidecarSocket = "/tmp/estimator.sock"
-)
-
-// PowerMoldelInterface defines the power model sckeleton
-type PowerMoldelInterface interface {
-	// AddProcessFeatureValues adds the new x as a point for trainning or prediction. Where x are explanatory variable (or the independent variable).
+// PowerModelInterface defines the power model skeleton
+type PowerModelInterface interface {
+	// AddProcessFeatureValues adds the new x as a point for training or prediction. Where x are explanatory variable (or the independent variable).
 	// x values are added to a sliding window with circular list for dynamic data flow
 	AddProcessFeatureValues(x []float64)
-	// AddNodeFeatureValues adds the new x as a point for trainning or prediction. Where x are explanatory variable (or the independent variable).
+	// AddNodeFeatureValues adds the new x as a point for training or prediction. Where x are explanatory variable (or the independent variable).
 	AddNodeFeatureValues(x []float64)
-	// AddDesiredOutValue adds the new y as a point for trainning. Where y the response variable (or the dependent variable).
+	// AddDesiredOutValue adds the new y as a point for training. Where y the response variable (or the dependent variable).
 	AddDesiredOutValue(y float64)
-	// ResetSampleIdx set the sample sliding window index, setting to 0 to overwrite the old samples with new ones for trainning or prediction.
+	// ResetSampleIdx set the sample sliding window index, setting to 0 to overwrite the old samples with new ones for training or prediction.
 	ResetSampleIdx()
-	// Train triggers the regressiong fit after adding data points to create a new power model
+	// Train triggers the regression fit after adding data points to create a new power model
 	Train() error
 	// IsEnabled returns true if the power model was trained and is active
 	IsEnabled() bool
-	// GetModelType returns if the model is Ratio, LinearRegressor or EstimatorSidecar
+	// GetModelType returns if the model is Ratio, Regressor or EstimatorSidecar
 	GetModelType() types.ModelType
 	// GetProcessFeatureNamesList returns the list of process features that the model was configured to use
 	GetProcessFeatureNamesList() []string
@@ -62,29 +60,28 @@ type PowerMoldelInterface interface {
 	GetNodeFeatureNamesList() []string
 	// GetPlatformPower returns the total Platform Power in Watts associated to each process/process/pod
 	// If isIdlePower is true, return the idle power, otherwise return the dynamic or absolute power depending on the model.
-	GetPlatformPower(isIdlePower bool) ([]float64, error)
+	GetPlatformPower(isIdlePower bool) ([]uint64, error)
 	// GetComponentsPower returns RAPL components Power in Watts associated to each each process/process/pod
 	// If isIdlePower is true, return the idle power, otherwise return the dynamic or absolute power depending on the model.
 	GetComponentsPower(isIdlePower bool) ([]source.NodeComponentsEnergy, error)
 	// GetComponentsPower returns GPU Power in Watts associated to each each process/process/pod
 	// If isIdlePower is true, return the idle power, otherwise return the dynamic or absolute power depending on the model.
-	GetGPUPower(isIdlePower bool) ([]float64, error)
+	GetGPUPower(isIdlePower bool) ([]uint64, error)
 }
 
 // CreatePowerEstimatorModels checks validity of power model and set estimate functions
-func CreatePowerEstimatorModels(processFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues []string) {
+func CreatePowerEstimatorModels(processFeatureNames []string) {
 	config.InitModelConfigMap()
-	CreateProcessPowerEstimatorModel(processFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues)
-	CreateProcessPowerEstimatorModel(processFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues)
+	CreateProcessPowerEstimatorModel(processFeatureNames)
 	// Node power estimator uses the process features to estimate node power, expect for the Ratio power model that contains additional metrics.
-	CreateNodePlatformPoweEstimatorModel(processFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues)
-	CreateNodeComponentPoweEstimatorModel(processFeatureNames, systemMetaDataFeatureNames, systemMetaDataFeatureValues)
+	CreateNodePlatformPoweEstimatorModel(processFeatureNames)
+	CreateNodeComponentPowerEstimatorModel(processFeatureNames)
 }
 
 // createPowerModelEstimator called by CreatePowerEstimatorModels to initiate estimate function for each power model.
-// To estimate the power using the trained models with the model server, we can choose between using the EstimatorSidecar or the LinearRegressor.
+// To estimate the power using the trained models with the model server, we can choose between using the EstimatorSidecar or the Regressor.
 // For the built-in Power Model, we have the option to use the Ratio power model.
-func createPowerModelEstimator(modelConfig *types.ModelConfig) (PowerMoldelInterface, error) {
+func createPowerModelEstimator(modelConfig *types.ModelConfig) (PowerModelInterface, error) {
 	switch modelConfig.ModelType {
 	case types.Ratio:
 		model := &local.RatioPowerModel{
@@ -94,30 +91,37 @@ func createPowerModelEstimator(modelConfig *types.ModelConfig) (PowerMoldelInter
 		klog.V(3).Infof("Using Power Model Ratio")
 		return model, nil
 
-	case types.LinearRegressor:
+	case types.Regressor:
 		var featuresNames []string
 		if modelConfig.IsNodePowerModel {
 			featuresNames = modelConfig.NodeFeatureNames
 		} else {
 			featuresNames = modelConfig.ProcessFeatureNames
 		}
-		model := &local.LinearRegressor{
-			ModelServerEndpoint:         config.ModelServerEndpoint,
+		trainerName := modelConfig.TrainerName
+		if trainerName == "" {
+			trainerName = config.DefaultTrainerName
+		}
+		model := &regressor.Regressor{
+			ModelServerEndpoint:         config.ModelServerEndpoint(),
 			OutputType:                  modelConfig.ModelOutputType,
 			EnergySource:                modelConfig.EnergySource,
-			TrainerName:                 modelConfig.TrainerName,
+			TrainerName:                 trainerName,
 			SelectFilter:                modelConfig.SelectFilter,
 			ModelWeightsURL:             modelConfig.InitModelURL,
 			ModelWeightsFilepath:        modelConfig.InitModelFilepath,
 			FloatFeatureNames:           featuresNames,
 			SystemMetaDataFeatureNames:  modelConfig.SystemMetaDataFeatureNames,
 			SystemMetaDataFeatureValues: modelConfig.SystemMetaDataFeatureValues,
+			RequestMachineSpec:          config.GetMachineSpec(),
+			DiscoveredMachineSpec:       config.GenerateSpec(),
 		}
 		err := model.Start()
 		if err != nil {
 			return nil, err
 		}
 		klog.V(3).Infof("Using Power Model %s", modelConfig.ModelOutputType.String())
+		klog.Infof("Requesting for Machine Spec: %v", model.RequestMachineSpec)
 		return model, nil
 
 	case types.EstimatorSidecar:
@@ -128,7 +132,7 @@ func createPowerModelEstimator(modelConfig *types.ModelConfig) (PowerMoldelInter
 			featuresNames = modelConfig.ProcessFeatureNames
 		}
 		model := &sidecar.EstimatorSidecar{
-			Socket:                      EstimatorSidecarSocket,
+			Socket:                      estimatorSidecarSocket,
 			OutputType:                  modelConfig.ModelOutputType,
 			TrainerName:                 modelConfig.TrainerName,
 			SelectFilter:                modelConfig.SelectFilter,
@@ -185,19 +189,19 @@ func getModelConfigKey(modelItem, attribute string) string {
 // getPowerModelType return the model type for a given power source, such as platform or components power sources
 // The default power model type is Ratio
 func getPowerModelType(powerSourceTarget string) (modelType types.ModelType) {
-	useEstimatorSidecarStr := config.ModelConfigValues[getModelConfigKey(powerSourceTarget, config.EstimatorEnabledKey)]
+	useEstimatorSidecarStr := config.ModelConfigValues(getModelConfigKey(powerSourceTarget, config.EstimatorEnabledKey))
 	if strings.EqualFold(useEstimatorSidecarStr, "true") {
 		modelType = types.EstimatorSidecar
 		return
 	}
-	useLinearRegressionStr := config.ModelConfigValues[getModelConfigKey(powerSourceTarget, config.LinearRegressionEnabledKey)]
-	if strings.EqualFold(useLinearRegressionStr, "true") {
-		modelType = types.LinearRegressor
+	useLocalRegressor := config.ModelConfigValues(getModelConfigKey(powerSourceTarget, config.LocalRegressorEnabledKey))
+	if strings.EqualFold(useLocalRegressor, "true") {
+		modelType = types.Regressor
 		return
 	}
-	// set the default node power model as LinearRegressor
-	if powerSourceTarget == config.NodePlatformPowerKey || powerSourceTarget == config.NodeComponentsPowerKey {
-		modelType = types.LinearRegressor
+	// set the default node power model as Regressor
+	if powerSourceTarget == config.NodePlatformPowerKey() || powerSourceTarget == config.NodeComponentsPowerKey() {
+		modelType = types.Regressor
 		return
 	}
 	// set the default process power model as Ratio
@@ -207,54 +211,57 @@ func getPowerModelType(powerSourceTarget string) (modelType types.ModelType) {
 
 // getPowerModelTrainerName return the trainer name for a given power source, such as platform or components power sources
 func getPowerModelTrainerName(powerSourceTarget string) (trainerName string) {
-	trainerName = config.ModelConfigValues[getModelConfigKey(powerSourceTarget, config.FixedTrainerNameKey)]
+	trainerName = config.ModelConfigValues(getModelConfigKey(powerSourceTarget, config.FixedTrainerNameKey))
 	return
 }
 
 // getPowerModelFilter return the model filter for a given power source, such as platform or components power sources
 // The model filter is used to select a model, for example selecting a model with the acceptable error: 'mae:0.5'
 func getPowerModelFilter(powerSourceTarget string) (selectFilter string) {
-	selectFilter = config.ModelConfigValues[getModelConfigKey(powerSourceTarget, config.ModelFiltersKey)]
+	selectFilter = config.ModelConfigValues(getModelConfigKey(powerSourceTarget, config.ModelFiltersKey))
 	return
 }
 
 // getPowerModelDownloadURL return the url to download the pre-trained power model for a given power source, such as platform or components power sources
 func getPowerModelDownloadURL(powerSourceTarget string) (url string) {
-	url = config.ModelConfigValues[getModelConfigKey(powerSourceTarget, config.InitModelURLKey)]
+	url = config.ModelConfigValues(getModelConfigKey(powerSourceTarget, config.InitModelURLKey))
 	return
 }
 
-// getPowerModelEnergySource return
+// getPowerModelEnergySource returns the energy source.
+// It's important to note that although the Prometheus metrics may set the energy source to "trained power model"
+// when hardware sensors are not available, the power model creation requires both ComponentEnergySource and
+// PlatformEnergySource values. Therefore, we must not replace it here
 func getPowerModelEnergySource(powerSourceTarget string) (energySource string) {
 	switch powerSourceTarget {
-	case config.ContainerPlatformPowerKey:
+	case config.ContainerPlatformPowerKey():
 		return types.PlatformEnergySource
-	case config.ContainerComponentsPowerKey:
+	case config.ContainerComponentsPowerKey():
 		return types.ComponentEnergySource
-	case config.ProcessPlatformPowerKey:
+	case config.ProcessPlatformPowerKey():
 		return types.PlatformEnergySource
-	case config.ProcessComponentsPowerKey:
+	case config.ProcessComponentsPowerKey():
 		return types.ComponentEnergySource
-	case config.NodePlatformPowerKey:
+	case config.NodePlatformPowerKey():
 		return types.PlatformEnergySource
-	case config.NodeComponentsPowerKey:
+	case config.NodeComponentsPowerKey():
 		return types.ComponentEnergySource
 	}
 	return ""
 }
 
 // getPowerModelOutputType return the model output type for a given power source, such as platform, components, process or node power sources.
-// getPowerModelOutputType only affects LinearRegressor or EstimatorSidecar model. The Ratio model does not download data from the Model Server.
+// getPowerModelOutputType only affects Regressor or EstimatorSidecar model. The Ratio model does not download data from the Model Server.
 // AbsPower for Node, DynPower for process and process
 func getPowerModelOutputType(powerSourceTarget string) types.ModelOutputType {
 	switch powerSourceTarget {
-	case config.ProcessComponentsPowerKey:
+	case config.ProcessComponentsPowerKey():
 		return types.DynPower
-	case config.ProcessPlatformPowerKey:
+	case config.ProcessPlatformPowerKey():
 		return types.DynPower
-	case config.NodePlatformPowerKey:
+	case config.NodePlatformPowerKey():
 		return types.AbsPower
-	case config.NodeComponentsPowerKey:
+	case config.NodeComponentsPowerKey():
 		return types.AbsPower
 	}
 	return types.Unsupported
@@ -263,9 +270,9 @@ func getPowerModelOutputType(powerSourceTarget string) types.ModelOutputType {
 // isNodeLevel return the true if current power key is node platform or node components
 func isNodeLevel(powerSourceTarget string) bool {
 	switch powerSourceTarget {
-	case config.NodePlatformPowerKey:
+	case config.NodePlatformPowerKey():
 		return true
-	case config.NodeComponentsPowerKey:
+	case config.NodeComponentsPowerKey():
 		return true
 	}
 	return false

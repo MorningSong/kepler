@@ -3,9 +3,9 @@
 # policy, and support documentation.
 
 name: Scorecard supply-chain security
-on:
+on: # yamllint disable-line rule:truthy
   workflow_call:
-  
+
 # Declare default permissions as read only.
 permissions: read-all
 
@@ -23,13 +23,13 @@ jobs:
       # actions: read
 
     steps:
-      - name: "Checkout code"
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Checkout code
+        uses: actions/checkout@cbb722410c2e876e24abbe8de2cc27693e501dcb # v4.1.1
         with:
           persist-credentials: false
 
-      - name: "Run analysis"
-        uses: ossf/scorecard-action@0864cf19026789058feabb7e87baa5f140aac736 # v2.3.1
+      - name: Run analysis
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
@@ -50,15 +50,15 @@ jobs:
 
       # Upload the results as artifacts (optional). Commenting out will disable uploads of run results in SARIF
       # format to the repository Actions tab.
-      - name: "Upload artifact"
-        uses: actions/upload-artifact@3cea5372237819ed00197afe530f5a7ea3e805c8 # v3.1.0
+      - name: Upload artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.3.6
         with:
           name: SARIF file
           path: scorecard-results.sarif
           retention-days: 5
 
       # Upload the results to GitHub's code scanning dashboard.
-      - name: "Upload to code-scanning"
-        uses: github/codeql-action/upload-sarif@v2 # commit hash will make dep bot in error hance use version instead
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@v3 # commit hash will make dep bot in error hance use version instead
         with:
           sarif_file: scorecard-results.sarif

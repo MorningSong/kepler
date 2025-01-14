@@ -1,0 +1,14 @@
+name: yamllint
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+
+permissions: read-all
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: yamllint
+        run: yamllint -c .yamllint.yaml --strict .

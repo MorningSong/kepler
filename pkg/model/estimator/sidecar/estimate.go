@@ -47,16 +47,11 @@ type PowerRequest struct {
 	SelectFilter                string      `json:"filter"`
 }
 
-// PlatformPowerResponse defines a response of a list of total powers from Kepler Estimator
-type PlatformPowerResponse struct {
-	Powers  []float64 `json:"powers"`
-	Message string    `json:"msg"`
-}
-
 // ComponentPowerResponse defines a response of a map of component powers from Kepler Estimator
 type ComponentPowerResponse struct {
-	Powers  map[string][]float64 `json:"powers"`
-	Message string               `json:"msg"`
+	Powers    map[string][]float64 `json:"powers"`
+	Message   string               `json:"msg"`
+	CoreRatio float64              `json:"core_ratio,omitempty"`
 }
 
 // EstimatorSidecar defines power estimator with Kepler Estimator sidecar
@@ -78,7 +73,8 @@ type EstimatorSidecar struct {
 	// xidx represents the instance slide window position, where an instance can be process/process/pod/node
 	xidx int
 
-	enabled bool
+	enabled   bool
+	coreRatio float64
 }
 
 // Start returns nil if estimator is connected and has compatible power model
@@ -139,13 +135,16 @@ func (c *EstimatorSidecar) makeRequest(usageValues [][]float64, systemValues []s
 		klog.V(4).Infof("estimator unmarshal error: %v (%s)", err, string(buf[0:n]))
 		return nil, err
 	}
+	if powerResponse.CoreRatio > 0 {
+		c.coreRatio = powerResponse.CoreRatio
+	}
 	return powers, nil
 }
 
 // GetPlatformPower makes a request to Kepler Estimator EstimatorSidecar and returns a list of total powers
-func (c *EstimatorSidecar) GetPlatformPower(isIdlePower bool) ([]float64, error) {
+func (c *EstimatorSidecar) GetPlatformPower(isIdlePower bool) ([]uint64, error) {
 	if !c.enabled {
-		return []float64{}, fmt.Errorf("disabled power model call: %s", c.OutputType.String())
+		return []uint64{}, fmt.Errorf("disabled power model call: %s", c.OutputType.String())
 	}
 	featuresValues := c.floatFeatureValues[0:c.xidx]
 	if isIdlePower {
@@ -153,16 +152,17 @@ func (c *EstimatorSidecar) GetPlatformPower(isIdlePower bool) ([]float64, error)
 	}
 	compPowers, err := c.makeRequest(featuresValues, c.SystemMetaDataFeatureValues)
 	if err != nil {
-		return []float64{}, err
+		return []uint64{}, err
 	}
 	power := compPowers.(map[string][]float64)
 	if len(power) == 0 {
-		return []float64{}, err
+		return []uint64{}, err
 	}
 	if powers, found := power[config.PLATFORM]; !found {
-		return []float64{}, fmt.Errorf("not found %s in response %v", config.PLATFORM, power)
+		return []uint64{}, fmt.Errorf("not found %s in response %v", config.PLATFORM, power)
 	} else {
-		return powers, nil
+		coreRatio := utils.GetCoreRatio(isIdlePower, c.coreRatio)
+		return utils.GetPlatformPower(powers, coreRatio), nil
 	}
 }
 
@@ -187,12 +187,12 @@ func (c *EstimatorSidecar) GetComponentsPower(isIdlePower bool) ([]source.NodeCo
 		break
 	}
 	nodeComponentsPower := make([]source.NodeComponentsEnergy, num)
-
+	coreRatio := utils.GetCoreRatio(isIdlePower, c.coreRatio)
 	for index := 0; index < num; index++ {
-		pkgPower := utils.GetComponentPower(power, config.PKG, index)
-		corePower := utils.GetComponentPower(power, config.CORE, index)
-		uncorePower := utils.GetComponentPower(power, config.UNCORE, index)
-		dramPower := utils.GetComponentPower(power, config.DRAM, index)
+		pkgPower := utils.GetComponentPower(power, config.PKG, index, coreRatio)
+		corePower := utils.GetComponentPower(power, config.CORE, index, coreRatio)
+		uncorePower := utils.GetComponentPower(power, config.UNCORE, index, coreRatio)
+		dramPower := utils.GetComponentPower(power, config.DRAM, index, coreRatio)
 		nodeComponentsPower[index] = utils.FillNodeComponentsPower(pkgPower, corePower, uncorePower, dramPower)
 	}
 
@@ -200,8 +200,8 @@ func (c *EstimatorSidecar) GetComponentsPower(isIdlePower bool) ([]source.NodeCo
 }
 
 // GetComponentsPower returns GPU Power in Watts associated to each each process/process/pod
-func (c *EstimatorSidecar) GetGPUPower(isIdlePower bool) ([]float64, error) {
-	return []float64{}, fmt.Errorf("current power model does not support GPUs")
+func (c *EstimatorSidecar) GetGPUPower(isIdlePower bool) ([]uint64, error) {
+	return []uint64{}, fmt.Errorf("current power model does not support GPUs")
 }
 
 func (c *EstimatorSidecar) addFloatFeatureValues(x []float64) {
@@ -242,17 +242,17 @@ func (c *EstimatorSidecar) AddNodeFeatureValues(x []float64) {
 }
 
 // AddDesiredOutValue adds the the y, which is the response variable (or the dependent variable) of regression.
-// EstimatorSidecar is trained off-line then we do not add Y for trainning. We might implement it in the future.
+// EstimatorSidecar is trained off-line then we do not add Y for training. We might implement it in the future.
 func (c *EstimatorSidecar) AddDesiredOutValue(y float64) {
 }
 
-// ResetSampleIdx set the sample vector index to 0 to overwrite the old samples with new ones for trainning or prediction.
+// ResetSampleIdx set the sample vector index to 0 to overwrite the old samples with new ones for training or prediction.
 func (c *EstimatorSidecar) ResetSampleIdx() {
 	c.xidx = 0
 }
 
 // Train triggers the regressiong fit after adding data points to create a new power model.
-// EstimatorSidecar is trained in the Model Server then we cannot trigger the trainning. We might implement it in the future.
+// EstimatorSidecar is trained in the Model Server then we cannot trigger the training. We might implement it in the future.
 func (c *EstimatorSidecar) Train() error {
 	return nil
 }
