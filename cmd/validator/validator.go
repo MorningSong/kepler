@@ -32,6 +32,7 @@ import (
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/components/source"
 	"github.com/sustainable-computing-io/kepler/pkg/sensors/platform"
+	"github.com/sustainable-computing-io/kepler/pkg/utils"
 )
 
 const (
@@ -100,29 +101,26 @@ func calculateNodeComponentsPower(index int, pre, cur map[int]source.NodeCompone
 }
 
 func updateNodePower(wg *sync.WaitGroup) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	defer wg.Done()
 
-		for i := 0; i < *sampleCount; i++ {
-			pre := components.GetAbsEnergyFromNodeComponents()
-			time.Sleep(time.Duration(*sampleDuration) * time.Second)
-			cur := components.GetAbsEnergyFromNodeComponents()
-			fmt.Printf("Sample %d:\n", i+1)
-			fmt.Printf("pre: %v\ncur: %v\n", pre, cur)
-			calculateNodeComponentsPower(i, pre, cur)
-			meanPower.pkgPower += samplePowers[i].pkgPower
-			meanPower.corePower += samplePowers[i].corePower
-			meanPower.uncorePower += samplePowers[i].uncorePower
-			meanPower.dramPower += samplePowers[i].dramPower
-		}
-		meanPower.pkgPower /= float64(*sampleCount)
-		meanPower.corePower /= float64(*sampleCount)
-		meanPower.uncorePower /= float64(*sampleCount)
-		meanPower.dramPower /= float64(*sampleCount)
-		fmt.Printf("Dump mean power:\n")
-		fmt.Printf("pkg:%f\ncore:%f\nuncore:%f\ndram:%f\n", meanPower.pkgPower, meanPower.corePower, meanPower.uncorePower, meanPower.dramPower)
-	}()
+	for i := 0; i < *sampleCount; i++ {
+		pre := components.GetAbsEnergyFromNodeComponents()
+		time.Sleep(time.Duration(*sampleDuration) * time.Second)
+		cur := components.GetAbsEnergyFromNodeComponents()
+		fmt.Printf("Sample %d:\n", i+1)
+		fmt.Printf("pre: %v\ncur: %v\n", pre, cur)
+		calculateNodeComponentsPower(i, pre, cur)
+		meanPower.pkgPower += samplePowers[i].pkgPower
+		meanPower.corePower += samplePowers[i].corePower
+		meanPower.uncorePower += samplePowers[i].uncorePower
+		meanPower.dramPower += samplePowers[i].dramPower
+	}
+	meanPower.pkgPower /= float64(*sampleCount)
+	meanPower.corePower /= float64(*sampleCount)
+	meanPower.uncorePower /= float64(*sampleCount)
+	meanPower.dramPower /= float64(*sampleCount)
+	fmt.Printf("Dump mean power:\n")
+	fmt.Printf("pkg:%f\ncore:%f\nuncore:%f\ndram:%f\n", meanPower.pkgPower, meanPower.corePower, meanPower.uncorePower, meanPower.dramPower)
 }
 
 func getX86Architecture() (string, error) {
@@ -174,11 +172,6 @@ func getX86Architecture() (string, error) {
 	return uarch, err
 }
 
-func isFileExists(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
-}
-
 func main() {
 	// init stuffs
 	flag.Parse()
@@ -202,7 +195,7 @@ func main() {
 	platform.InitPowerImpl()
 
 	csvFilePath := filepath.Join(resultDirPath, "power.csv")
-	if !isFileExists(csvFilePath) {
+	if !utils.IsFileExists(csvFilePath) {
 		columnHeaders := []string{"Pkg", "Core", "Uncore", "Dram"}
 		csvFile, e := os.Create(csvFilePath)
 		if e != nil {
@@ -251,7 +244,7 @@ func main() {
 			}
 		}
 		if platform.IsSystemCollectionSupported() {
-			powerSource := platform.GetPowerSource()
+			powerSource := platform.GetSourceName()
 			switch powerSource {
 			case "hmc":
 				hmcEnable = true
@@ -286,7 +279,8 @@ func main() {
 
 	if *genPower {
 		wg := sync.WaitGroup{}
-		updateNodePower(&wg)
+		wg.Add(1)
+		go updateNodePower(&wg)
 		wg.Wait()
 
 		pkg := strconv.FormatFloat(meanPower.pkgPower, 'f', 3, 64)

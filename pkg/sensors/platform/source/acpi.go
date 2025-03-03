@@ -52,7 +52,11 @@ type ACPI struct {
 	powerPath     string
 }
 
-func NewACPIPowerMeter() *ACPI {
+func NewACPIPowerMeter(mockpath string) *ACPI {
+	if mockpath != "" {
+		klog.Infof("using user provided ACPI power path: %s", mockpath)
+		return &ACPI{powerPath: mockpath, CollectEnergy: true}
+	}
 	acpi := &ACPI{powerPath: hwmonPowerPath}
 	if acpi.IsHWMONCollectionSupported() {
 		acpi.CollectEnergy = true
@@ -95,6 +99,10 @@ func findACPIPowerPath() string {
 		return ""
 	}
 	return powerPath
+}
+
+func (ACPI) GetName() string {
+	return "acpi"
 }
 
 func (a *ACPI) StopPower() {
@@ -164,7 +172,7 @@ func (a *ACPI) GetAbsEnergyFromPlatform() (map[string]float64, error) {
 		if err == nil {
 			// since Kepler collects metrics at intervals of SamplePeriodSec, which is greater than 1 second, it is
 			// necessary to calculate the energy consumption for the entire waiting period
-			power[sensorIDPrefix+strconv.Itoa(int(i))] = float64(currPower / 1000 * config.SamplePeriodSec) /*miliJoules*/
+			power[sensorIDPrefix+strconv.Itoa(int(i))] = float64(currPower / 1000 * config.SamplePeriodSec()) /*miliJoules*/
 		} else {
 			return power, err
 		}

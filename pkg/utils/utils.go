@@ -1,3 +1,21 @@
+//go:build !darwin
+// +build !darwin
+
+/*
+Copyright 2021.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package utils
 
 import (
@@ -7,6 +25,8 @@ import (
 	"os"
 	"strings"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 func CreateTempFile(contents string) (filename string, reterr error) {
@@ -49,6 +69,7 @@ const (
 	SystemProcessNamespace string = "system"
 	EmptyString            string = ""
 	GenericSocketID        string = "socket0"
+	GenericGPUID           string = "gpu"
 )
 
 func GetPathFromPID(searchPath string, pid uint64) (string, error) {
@@ -67,4 +88,17 @@ func GetPathFromPID(searchPath string, pid uint64) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not find cgroup description entry for pid %d", pid)
+}
+
+func GetCgroupIDFromPath(byteOrder binary.ByteOrder, path string) (uint64, error) {
+	handle, _, err := unix.NameToHandleAt(unix.AT_FDCWD, path, 0)
+	if err != nil {
+		return uint64(0), fmt.Errorf("error resolving handle: %v", err)
+	}
+	return byteOrder.Uint64(handle.Bytes()), nil
+}
+
+func IsFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }

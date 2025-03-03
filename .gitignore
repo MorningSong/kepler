@@ -40,3 +40,9 @@ local-dev-cluster
 *.cache
 /tmp
 .env
+
+# test coverage
+coverage.out
+
+# old libbpf-based binaries
+bpfassets/

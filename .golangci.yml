@@ -1,6 +1,6 @@
 linters-settings:
   dupl:
-    threshold: 100
+    threshold: 150
   goconst:
     min-len: 2
     min-occurrences: 3
@@ -19,7 +19,8 @@ linters-settings:
     local-prefixes: github.com/golangci/golangci-lint
 
   govet:
-    check-shadowing: true
+    enable:
+      - shadow
     settings:
       printf:
         funcs:
@@ -36,7 +37,6 @@ linters:
   disable-all: true
   enable:
     - bodyclose
-    # - depguard
     - dupl
     - errcheck
     - goconst
@@ -60,38 +60,34 @@ linters:
     - whitespace
     - unused
     - asciicheck
-
-  # don't enable:
-  # - lll
-  # - dogsled
-  # - gochecknoinits
-  # - gomnd
-  # - unused
-
-  # TODO: try to enable
-  # - scopelint
-  # - gochecknoglobals
-  # - gocognit
-  # - godot
-  # - godox
-  # - goerr113
-  # - interfacer
-  # - maligned
-  # - nestif
-  # - prealloc
-  # - testpackage
-  # - revive
-  # - wsl
-  # - funlen
+    # don't enable:
+    # - lll
+    # - dogsled
+    # - gochecknoinits
+    # - gomnd
+    # - unused
+    # TODO: try to enable
+    # - scopelint
+    # - gochecknoglobals
+    # - gocognit
+    # - godot
+    # - godox
+    # - goerr113
+    # - interfacer
+    # - maligned
+    # - nestif
+    # - prealloc
+    # - testpackage
+    # - revive
+    # - wsl
+    # - funlen
 
 run:
   timeout: 5m
 
 issues:
   exclude-rules:
-    - linters:
-        - typecheck
-      text: "could not import C"
-    - linters:
-        - dupl
-      text: ".*pkg/collector/stats/types/types_test.go.*" # false positive, https://github.com/mibk/dupl/issues/20
+    - linters: [dupl]
+      text: .*pkg/collector/stats/types/types_test.go.* # false positive, https://github.com/mibk/dupl/issues/20
+    - text: 'shadow: declaration of "(err|ctx)" shadows declaration at' # yamllint disable-line rule:quoted-strings
+      linters: [govet]

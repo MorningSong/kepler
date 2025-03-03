@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/metrics/consts"
@@ -39,16 +40,19 @@ type collector struct {
 	// ContainerStats holds all containers energy and resource usage metrics
 	ContainerStats map[string]*stats.ContainerStats
 
-	// Lock to syncronize the collector update with prometheus exporter
+	// Lock to synchronize the collector update with prometheus exporter
 	Mx *sync.Mutex
+
+	bpfSupportedMetrics bpf.SupportedMetrics
 }
 
-func NewContainerCollector(containerMetrics map[string]*stats.ContainerStats, mx *sync.Mutex) prometheus.Collector {
+func NewContainerCollector(containerMetrics map[string]*stats.ContainerStats, mx *sync.Mutex, bpfSupportedMetrics bpf.SupportedMetrics) prometheus.Collector {
 	c := &collector{
-		ContainerStats: containerMetrics,
-		descriptions:   make(map[string]*prometheus.Desc),
-		collectors:     make(map[string]metricfactory.PromMetric),
-		Mx:             mx,
+		ContainerStats:      containerMetrics,
+		descriptions:        make(map[string]*prometheus.Desc),
+		collectors:          make(map[string]metricfactory.PromMetric),
+		Mx:                  mx,
+		bpfSupportedMetrics: bpfSupportedMetrics,
 	}
 	c.initMetrics()
 	return c
@@ -59,23 +63,19 @@ func (c *collector) initMetrics() {
 	if !config.IsExposeContainerStatsEnabled() {
 		return
 	}
-	for name, desc := range metricfactory.HCMetricsPromDesc(context) {
+	for name, desc := range metricfactory.HCMetricsPromDesc(context, c.bpfSupportedMetrics) {
 		c.descriptions[name] = desc
 		c.collectors[name] = metricfactory.NewPromCounter(desc)
 	}
-	for name, desc := range metricfactory.SCMetricsPromDesc(context) {
-		c.descriptions[name] = desc
-		c.collectors[name] = metricfactory.NewPromCounter(desc)
-	}
-	for name, desc := range metricfactory.IRQMetricsPromDesc(context) {
-		c.descriptions[name] = desc
-		c.collectors[name] = metricfactory.NewPromCounter(desc)
-	}
-	for name, desc := range metricfactory.CGroupMetricsPromDesc(context) {
+	for name, desc := range metricfactory.SCMetricsPromDesc(context, c.bpfSupportedMetrics) {
 		c.descriptions[name] = desc
 		c.collectors[name] = metricfactory.NewPromCounter(desc)
 	}
 	for name, desc := range metricfactory.EnergyMetricsPromDesc(context) {
+		c.descriptions[name] = desc
+		c.collectors[name] = metricfactory.NewPromCounter(desc)
+	}
+	for name, desc := range metricfactory.GPUUsageMetricsPromDesc(context) {
 		c.descriptions[name] = desc
 		c.collectors[name] = metricfactory.NewPromCounter(desc)
 	}
@@ -95,27 +95,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	c.Mx.Lock()
 	for _, container := range c.ContainerStats {
 		utils.CollectEnergyMetrics(ch, container, c.collectors)
-		utils.CollectResUtilizationMetrics(ch, container, c.collectors)
-
+		utils.CollectResUtilizationMetrics(ch, container, c.collectors, c.bpfSupportedMetrics)
 		// update container total joules
-		c.collectTotalEnergyMetrics(ch, container)
+		utils.CollectTotalEnergyMetrics(ch, container, c.collectors)
 	}
 	c.Mx.Unlock()
-}
-
-// We currently export a metric kepler_container_total_joules but this metric is the same as kepler_container_platform_joules. We might remote it in the future.
-func (c *collector) collectTotalEnergyMetrics(ch chan<- prometheus.Metric, container *stats.ContainerStats) {
-	energy := container.EnergyUsage[config.DynEnergyInPkg].SumAllAggrValues()
-	energy += container.EnergyUsage[config.DynEnergyInDRAM].SumAllAggrValues()
-	energy += container.EnergyUsage[config.DynEnergyInOther].SumAllAggrValues()
-	energy += container.EnergyUsage[config.DynEnergyInGPU].SumAllAggrValues()
-	labelValues := []string{container.ContainerID, container.PodName, container.ContainerName, container.Namespace, "dynamic"}
-	ch <- c.collectors["total"].MustMetric(float64(energy), labelValues...)
-
-	energy = container.EnergyUsage[config.IdleEnergyInPkg].SumAllAggrValues()
-	energy += container.EnergyUsage[config.IdleEnergyInDRAM].SumAllAggrValues()
-	energy += container.EnergyUsage[config.IdleEnergyInOther].SumAllAggrValues()
-	energy += container.EnergyUsage[config.IdleEnergyInGPU].SumAllAggrValues()
-	labelValues = []string{container.ContainerID, container.PodName, container.ContainerName, container.Namespace, "idle"}
-	ch <- c.collectors["total"].MustMetric(float64(energy), labelValues...)
 }

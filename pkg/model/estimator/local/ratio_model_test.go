@@ -26,6 +26,10 @@ import (
 )
 
 var _ = Describe("Test Ratio Unit", func() {
+	BeforeEach(func() {
+		_, err := config.Initialize(".")
+		Expect(err).NotTo(HaveOccurred())
+	})
 	It("GetProcessEnergyRatio", func() {
 		stats.SetMockedCollectorMetrics()
 		processStats := stats.CreateMockedProcessStats(3)
@@ -38,49 +42,49 @@ var _ = Describe("Test Ratio Unit", func() {
 		Expect(nodeStats.EnergyUsage[config.DynEnergyInPlatform].SumAllDeltaValues()).Should(BeEquivalentTo(35000))
 
 		for _, pMetric := range processStats {
-			val := pMetric.ResourceUsage[config.CPUCycle].Stat[stats.MockedSocketID].GetDelta()
+			val := pMetric.ResourceUsage[config.CPUCycle][stats.MockedSocketID].GetDelta()
 			nodeStats.ResourceUsage[config.CPUCycle].AddDeltaStat(stats.MockedSocketID, val)
 
-			val = pMetric.ResourceUsage[config.CPUInstruction].Stat[stats.MockedSocketID].GetDelta()
+			val = pMetric.ResourceUsage[config.CPUInstruction][stats.MockedSocketID].GetDelta()
 			nodeStats.ResourceUsage[config.CPUInstruction].AddDeltaStat(stats.MockedSocketID, val)
 
-			val = pMetric.ResourceUsage[config.CacheMiss].Stat[stats.MockedSocketID].GetDelta()
+			val = pMetric.ResourceUsage[config.CacheMiss][stats.MockedSocketID].GetDelta()
 			nodeStats.ResourceUsage[config.CacheMiss].AddDeltaStat(stats.MockedSocketID, val)
 
-			val = pMetric.ResourceUsage[config.CPUTime].Stat[stats.MockedSocketID].GetDelta()
+			val = pMetric.ResourceUsage[config.CPUTime][stats.MockedSocketID].GetDelta()
 			nodeStats.ResourceUsage[config.CPUTime].AddDeltaStat(stats.MockedSocketID, val)
 		}
-		Expect(nodeStats.ResourceUsage[config.CoreUsageMetric].Stat[utils.GenericSocketID].GetDelta()).Should(BeEquivalentTo(90000))
+		Expect(nodeStats.ResourceUsage[config.CoreUsageMetric()][utils.GenericSocketID].GetDelta()).Should(BeEquivalentTo(90000))
 
 		// The default estimator model is the ratio
 		model := RatioPowerModel{
 			ProcessFeatureNames: []string{
-				config.CoreUsageMetric,    // for PKG resource usage
-				config.CoreUsageMetric,    // for CORE resource usage
-				config.DRAMUsageMetric,    // for DRAM resource usage
-				config.GeneralUsageMetric, // for UNCORE resource usage
-				config.GeneralUsageMetric, // for OTHER resource usage
-				config.GpuUsageMetric,     // for GPU resource usage
+				config.CoreUsageMetric(),    // for PKG resource usage
+				config.CoreUsageMetric(),    // for CORE resource usage
+				config.DRAMUsageMetric(),    // for DRAM resource usage
+				config.GeneralUsageMetric(), // for UNCORE resource usage
+				config.GeneralUsageMetric(), // for OTHER resource usage
+				config.GPUUsageMetric(),     // for GPU resource usage
 			},
 			NodeFeatureNames: []string{
-				config.CoreUsageMetric,    // for PKG resource usage
-				config.CoreUsageMetric,    // for CORE resource usage
-				config.DRAMUsageMetric,    // for DRAM resource usage
-				config.GeneralUsageMetric, // for UNCORE resource usage
-				config.GeneralUsageMetric, // for OTHER resource usage
-				config.GpuUsageMetric,     // for GPU resource usage
-				config.DynEnergyInPkg,     // for dynamic PKG power consumption
-				config.DynEnergyInCore,    // for dynamic CORE power consumption
-				config.DynEnergyInDRAM,    // for dynamic PKG power consumption
-				config.DynEnergyInUnCore,  // for dynamic UNCORE power consumption
-				config.DynEnergyInOther,   // for dynamic OTHER power consumption
-				config.DynEnergyInGPU,     // for dynamic GPU power consumption
-				config.IdleEnergyInPkg,    // for idle PKG power consumption
-				config.IdleEnergyInCore,   // for idle CORE power consumption
-				config.IdleEnergyInDRAM,   // for idle PKG power consumption
-				config.IdleEnergyInUnCore, // for idle UNCORE power consumption
-				config.IdleEnergyInOther,  // for idle OTHER power consumption
-				config.IdleEnergyInGPU,    // for idle GPU power consumption
+				config.CoreUsageMetric(),    // for PKG resource usage
+				config.CoreUsageMetric(),    // for CORE resource usage
+				config.DRAMUsageMetric(),    // for DRAM resource usage
+				config.GeneralUsageMetric(), // for UNCORE resource usage
+				config.GeneralUsageMetric(), // for OTHER resource usage
+				config.GPUUsageMetric(),     // for GPU resource usage
+				config.DynEnergyInPkg,       // for dynamic PKG power consumption
+				config.DynEnergyInCore,      // for dynamic CORE power consumption
+				config.DynEnergyInDRAM,      // for dynamic PKG power consumption
+				config.DynEnergyInUnCore,    // for dynamic UNCORE power consumption
+				config.DynEnergyInOther,     // for dynamic OTHER power consumption
+				config.DynEnergyInGPU,       // for dynamic GPU power consumption
+				config.IdleEnergyInPkg,      // for idle PKG power consumption
+				config.IdleEnergyInCore,     // for idle CORE power consumption
+				config.IdleEnergyInDRAM,     // for idle PKG power consumption
+				config.IdleEnergyInUnCore,   // for idle UNCORE power consumption
+				config.IdleEnergyInOther,    // for idle OTHER power consumption
+				config.IdleEnergyInGPU,      // for idle GPU power consumption
 			},
 		}
 		model.ResetSampleIdx()

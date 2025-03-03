@@ -20,13 +20,6 @@ import (
 	"fmt"
 )
 
-var (
-	// ProcessMetricNames holds the list of names of the container metric
-	ProcessMetricNames []string
-	// ProcessFeaturesNames holds all the feature name of the container stats. This is specific for the machine-learning based models.
-	ProcessFeaturesNames []string
-)
-
 type ProcessStats struct {
 	Stats
 	PID         uint64

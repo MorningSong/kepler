@@ -22,14 +22,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sustainable-computing-io/kepler/pkg/config"
 )
 
 func TestRedFishClient_IsPowerSupported(t *testing.T) {
+	if _, err := config.Initialize("."); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create a mock HTTP server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/redfish/v1/Systems" {
-			system := RedfishSystemModel{
-				Name: "Test System",
+		if r.URL.Path == "/redfish/v1/Chassis" {
+			system := RedfishChassisModel{
+				Name: "Test Chassis",
 				Members: []struct {
 					OdataID string `json:"@odata.id"`
 				}{

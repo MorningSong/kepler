@@ -17,23 +17,20 @@ limitations under the License.
 package collector
 
 import (
-	"fmt"
 	"os"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/sustainable-computing-io/kepler/pkg/bpfassets/attacher"
-	cgroup_api "github.com/sustainable-computing-io/kepler/pkg/cgroup"
+	"github.com/sustainable-computing-io/kepler/pkg/bpf"
+	"github.com/sustainable-computing-io/kepler/pkg/cgroup"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/energy"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/resourceutilization/accelerator"
-	"github.com/sustainable-computing-io/kepler/pkg/collector/resourceutilization/bpf"
-	cgroup_collector "github.com/sustainable-computing-io/kepler/pkg/collector/resourceutilization/cgroup"
+	resourceBpf "github.com/sustainable-computing-io/kepler/pkg/collector/resourceutilization/bpf"
 	"github.com/sustainable-computing-io/kepler/pkg/collector/stats"
 	"github.com/sustainable-computing-io/kepler/pkg/config"
 	"github.com/sustainable-computing-io/kepler/pkg/model"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/gpu"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/qat"
+	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
 	"github.com/sustainable-computing-io/kepler/pkg/utils"
 
 	"k8s.io/klog/v2"
@@ -57,45 +54,34 @@ type Collector struct {
 
 	// VMStats holds the aggregated processes metrics for all virtual machines
 	VMStats map[string]*stats.VMStats
+
+	// bpfExporter handles gathering metrics from bpf probes
+	bpfExporter bpf.Exporter
+	// bpfSupportedMetrics holds the supported metrics by the bpf exporter
+	bpfSupportedMetrics bpf.SupportedMetrics
 }
 
-func NewCollector() *Collector {
+func NewCollector(bpfExporter bpf.Exporter) *Collector {
+	bpfSupportedMetrics := bpfExporter.SupportedMetrics()
 	c := &Collector{
-		NodeStats:      *stats.NewNodeStats(),
-		ContainerStats: map[string]*stats.ContainerStats{},
-		ProcessStats:   map[uint64]*stats.ProcessStats{},
-		VMStats:        map[string]*stats.VMStats{},
+		NodeStats:           *stats.NewNodeStats(),
+		ContainerStats:      map[string]*stats.ContainerStats{},
+		ProcessStats:        map[uint64]*stats.ProcessStats{},
+		VMStats:             map[string]*stats.VMStats{},
+		bpfExporter:         bpfExporter,
+		bpfSupportedMetrics: bpfSupportedMetrics,
 	}
 	return c
 }
 
 func (c *Collector) Initialize() error {
-	_, err := attacher.Attach()
-	if err != nil {
-		return fmt.Errorf("failed to attach bpf assets: %v", err)
-	}
-
-	if config.IsCgroupMetricsEnabled() {
-		_, err = cgroup_api.Init()
-		if err != nil && !config.EnableProcessStats {
-			klog.V(5).Infoln(err)
-			return err
-		}
-	}
-
 	// For local estimator, there is endpoint provided, thus we should let
 	// model component decide whether/how to init
 	model.CreatePowerEstimatorModels(
-		stats.ProcessFeaturesNames,
-		stats.NodeMetadataFeatureNames,
-		stats.NodeMetadataFeatureValues,
+		stats.GetProcessFeatureNames(),
 	)
 
 	return nil
-}
-
-func (c *Collector) Destroy() {
-	attacher.Detach()
 }
 
 // Update updates the node and container energy and resource usage metrics
@@ -141,8 +127,8 @@ func (c *Collector) UpdateEnergyUtilizationMetrics() {
 	c.AggregateProcessEnergyUtilizationMetrics()
 }
 
-// UpdateEnergyUtilizationMetrics collects real-time node's resource power utilization
-// if there is no real-time power meter, use the container's resource usage metrics to estimate the node's resource power
+// UpdateNodeEnergyUtilizationMetrics collects real-time node resource power utilization
+// if there is no real-time power meter, use the container resource usage metrics to estimate the node's resource power
 func (c *Collector) UpdateNodeEnergyUtilizationMetrics() {
 	energy.UpdateNodeEnergyMetrics(&c.NodeStats)
 }
@@ -153,59 +139,28 @@ func (c *Collector) UpdateProcessEnergyUtilizationMetrics() {
 }
 
 func (c *Collector) updateResourceUtilizationMetrics() {
-	var wg sync.WaitGroup
+	wg := &sync.WaitGroup{}
 	wg.Add(2)
-	c.updateNodeResourceUtilizationMetrics(&wg)
-	c.updateProcessResourceUtilizationMetrics(&wg)
+	go c.updateNodeResourceUtilizationMetrics(wg)
+	go c.updateProcessResourceUtilizationMetrics(wg)
 	wg.Wait()
 	// aggregate processes' resource utilization metrics to containers, virtual machines and nodes
 	c.AggregateProcessResourceUtilizationMetrics()
-	// update the deprecated cgroup metrics. Note that we only call this function after all process metrics were aggregated per container
-	c.updateContainerResourceUtilizationMetrics()
-}
-
-// updateNodeAvgCPUFrequencyFromEBPF updates the average CPU frequency in each core
-func (c *Collector) updateNodeAvgCPUFrequencyFromEBPF() {
-	// update the cpu frequency using hardware counters when available because reading files can be very expensive
-	if config.IsExposeCPUFrequencyMetricsEnabled() && attacher.HardwareCountersEnabled {
-		cpuFreq, err := attacher.CollectCPUFreq()
-		if err == nil {
-			for cpu, freq := range cpuFreq {
-				c.NodeStats.EnergyUsage[config.CPUFrequency].SetDeltaStat(fmt.Sprintf("%d", cpu), freq)
-			}
-		}
-	}
 }
 
 // update the node metrics that are not related to aggregated resource utilization of processes
 func (c *Collector) updateNodeResourceUtilizationMetrics(wg *sync.WaitGroup) {
-	defer wg.Done()
-	if config.EnabledGPU && gpu.IsGPUCollectionSupported() {
-		accelerator.UpdateNodeGPUUtilizationMetrics(c.ProcessStats)
-	}
-
-	if config.IsExposeQATMetricsEnabled() && qat.IsQATCollectionSupported() {
-		accelerator.UpdateNodeQATMetrics(stats.NewNodeStats())
-	}
-
-	if config.ExposeCPUFrequencyMetrics {
-		c.updateNodeAvgCPUFrequencyFromEBPF()
-	}
+	wg.Done()
 }
 
 func (c *Collector) updateProcessResourceUtilizationMetrics(wg *sync.WaitGroup) {
 	defer wg.Done()
 	// update process metrics regarding the resource utilization to be used to calculate the energy consumption
-	// we first updates the bpf which is resposible to include new processes in the ProcessStats collection
-	bpf.UpdateProcessBPFMetrics(c.ProcessStats)
-}
-
-// this is only for cgroup metrics, as these metrics are deprecated we might remove thi in the future
-func (c *Collector) updateContainerResourceUtilizationMetrics() {
-	if config.IsExposeContainerStatsEnabled() {
-		if config.IsCgroupMetricsEnabled() {
-			// collect cgroup metrics from cgroup api
-			cgroup_collector.UpdateContainerCgroupMetrics(c.ContainerStats)
+	// we first updates the bpf which is responsible to include new processes in the ProcessStats collection
+	resourceBpf.UpdateProcessBPFMetrics(c.bpfExporter, c.ProcessStats)
+	if config.IsGPUEnabled() {
+		if acc.GetActiveAcceleratorByType(config.GPU) != nil {
+			accelerator.UpdateProcessGPUUtilizationMetrics(c.ProcessStats)
 		}
 	}
 }
@@ -216,17 +171,17 @@ func (c *Collector) AggregateProcessResourceUtilizationMetrics() {
 	foundVM := make(map[string]bool)
 	for _, process := range c.ProcessStats {
 		if process.IdleCounter > 0 {
-			// if the process metrics were not updated for multiple interations, very if the process still exist, otherwise delete it from the map
+			// if the process metrics were not updated for multiple iterations, very if the process still exist, otherwise delete it from the map
 			c.handleIdlingProcess(process)
 		}
 		for metricName, resource := range process.ResourceUsage {
-			for id := range resource.Stat {
-				delta := resource.Stat[id].GetDelta() // currently the process metrics are single socket
+			for id := range resource {
+				delta := resource[id].GetDelta() // currently the process metrics are single socket
 
 				// aggregate metrics per container
 				if config.IsExposeContainerStatsEnabled() {
 					if process.ContainerID != "" {
-						c.createContainerStatsIfNotExist(process.ContainerID, process.CGroupID, process.PID, config.EnabledEBPFCgroupID)
+						c.createContainerStatsIfNotExist(process.ContainerID, process.CGroupID, process.PID, config.EnabledEBPFCgroupID())
 						c.ContainerStats[process.ContainerID].ResourceUsage[metricName].AddDeltaStat(id, delta)
 						foundContainer[process.ContainerID] = true
 					}
@@ -274,7 +229,7 @@ func (c *Collector) handleIdlingProcess(pStat *stats.ProcessStats) {
 func (c *Collector) handleInactiveContainers(foundContainer map[string]bool) {
 	numOfInactive := len(c.ContainerStats) - len(foundContainer)
 	if numOfInactive > maxInactiveContainers {
-		aliveContainers, err := cgroup_api.GetAliveContainers()
+		aliveContainers, err := cgroup.GetAliveContainers()
 		if err != nil {
 			klog.V(5).Infoln(err)
 			return
@@ -306,13 +261,13 @@ func (c *Collector) handleInactiveVM(foundVM map[string]bool) {
 func (c *Collector) AggregateProcessEnergyUtilizationMetrics() {
 	for _, process := range c.ProcessStats {
 		for metricName, stat := range process.EnergyUsage {
-			for id := range stat.Stat {
-				delta := stat.Stat[id].GetDelta() // currently the process metrics are single socket
+			for id := range stat {
+				delta := stat[id].GetDelta() // currently the process metrics are single socket
 
 				// aggregate metrics per container
 				if config.IsExposeContainerStatsEnabled() {
 					if process.ContainerID != "" {
-						c.createContainerStatsIfNotExist(process.ContainerID, process.CGroupID, process.PID, config.EnabledEBPFCgroupID)
+						c.createContainerStatsIfNotExist(process.ContainerID, process.CGroupID, process.PID, config.EnabledEBPFCgroupID())
 						c.ContainerStats[process.ContainerID].EnergyUsage[metricName].AddDeltaStat(id, delta)
 					}
 				}

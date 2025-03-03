@@ -1,5 +1,5 @@
 /*
-Copyright 2021.
+Copyright 2021-2024.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,19 +20,9 @@ import (
 	"fmt"
 
 	"github.com/sustainable-computing-io/kepler/pkg/config"
-	"github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator/gpu"
+	"github.com/sustainable-computing-io/kepler/pkg/node"
+	acc "github.com/sustainable-computing-io/kepler/pkg/sensors/accelerator"
 	"github.com/sustainable-computing-io/kepler/pkg/utils"
-)
-
-var (
-	NodeName            = GetNodeName()
-	NodeCPUArchitecture = getCPUArch()
-	NodeCPUPackageMap   = getCPUPackageMap()
-
-	// NodeMetricNames holds the name of the system metadata information.
-	NodeMetadataFeatureNames []string = []string{"cpu_architecture"}
-	// SystemMetadata holds the metadata regarding the system information
-	NodeMetadataFeatureValues []string = []string{NodeCPUArchitecture}
 )
 
 type NodeStats struct {
@@ -40,12 +30,16 @@ type NodeStats struct {
 
 	// IdleResUtilization is used to determine idle pmap[string]eriods
 	IdleResUtilization map[string]uint64
+
+	// nodeInfo allows access to node information
+	nodeInfo node.Node
 }
 
 func NewNodeStats() *NodeStats {
 	return &NodeStats{
 		Stats:              *NewStats(),
 		IdleResUtilization: map[string]uint64{},
+		nodeInfo:           node.NewNodeInfo(),
 	}
 }
 
@@ -56,8 +50,10 @@ func (ne *NodeStats) ResetDeltaValues() {
 
 func (ne *NodeStats) UpdateIdleEnergyWithMinValue(isComponentsSystemCollectionSupported bool) {
 	// gpu metric
-	if config.EnabledGPU && gpu.IsGPUCollectionSupported() {
-		ne.CalcIdleEnergy(config.AbsEnergyInGPU, config.IdleEnergyInGPU, config.GPUSMUtilization)
+	if config.IsGPUEnabled() {
+		if acc.GetActiveAcceleratorByType(config.GPU) != nil {
+			ne.CalcIdleEnergy(config.AbsEnergyInGPU, config.IdleEnergyInGPU, config.GPUComputeUtilization)
+		}
 	}
 
 	if isComponentsSystemCollectionSupported {
@@ -73,22 +69,22 @@ func (ne *NodeStats) CalcIdleEnergy(absM, idleM, resouceUtil string) {
 	newTotalResUtilization := ne.ResourceUsage[resouceUtil].SumAllDeltaValues()
 	currIdleTotalResUtilization := ne.IdleResUtilization[resouceUtil]
 
-	for socketID := range ne.EnergyUsage[absM].Stat {
-		newIdleDelta := ne.EnergyUsage[absM].Stat[socketID].Delta
+	for socketID, value := range ne.EnergyUsage[absM] {
+		newIdleDelta := value.GetDelta()
 		if newIdleDelta == 0 {
 			// during the first power collection iterations, the delta values could be 0, so we skip until there are delta values
 			continue
 		}
 
 		// add any value if there is no idle power yet
-		if _, exist := ne.EnergyUsage[idleM].Stat[socketID]; !exist {
+		if _, exist := ne.EnergyUsage[idleM][socketID]; !exist {
 			ne.EnergyUsage[idleM].SetDeltaStat(socketID, newIdleDelta)
-			// store the curret CPU utilization to find a new idle power later
+			// store the current CPU utilization to find a new idle power later
 			ne.IdleResUtilization[resouceUtil] = newTotalResUtilization
 		} else {
-			currIdleDelta := ne.EnergyUsage[idleM].Stat[socketID].Delta
+			currIdleDelta := ne.EnergyUsage[idleM][socketID].GetDelta()
 			// verify if there is a new minimal energy consumption for the given resource
-			// TODO: fix verifying the aggregated resource utilization from all sockets, the update the energy per socket can lead to inconsitency
+			// TODO: fix verifying the aggregated resource utilization from all sockets, the update the energy per socket can lead to inconsistency
 			if (newTotalResUtilization <= currIdleTotalResUtilization) || (currIdleDelta == 0) {
 				if (currIdleDelta == 0) || (currIdleDelta >= newIdleDelta) {
 					ne.EnergyUsage[idleM].SetDeltaStat(socketID, newIdleDelta)
@@ -106,7 +102,7 @@ func (ne *NodeStats) CalcIdleEnergy(absM, idleM, resouceUtil string) {
 	}
 }
 
-// SetNodeOtherComponentsEnergy adds the lastest energy consumption collected from the other node's components than CPU and DRAM
+// SetNodeOtherComponentsEnergy adds the latest energy consumption collected from the other node's components than CPU and DRAM
 // Other components energy is a special case where the energy is calculated and not measured
 func (ne *NodeStats) SetNodeOtherComponentsEnergy() {
 	// calculate dynamic energy in other components
@@ -138,4 +134,20 @@ func (ne *NodeStats) String() string {
 	return fmt.Sprintf("node energy (mJ): \n"+
 		"%v\n", ne.Stats.String(),
 	)
+}
+
+func (ne *NodeStats) MetadataFeatureNames() []string {
+	return ne.nodeInfo.MetadataFeatureNames()
+}
+
+func (ne *NodeStats) MetadataFeatureValues() []string {
+	return ne.nodeInfo.MetadataFeatureValues()
+}
+
+func (ne *NodeStats) CPUArchitecture() string {
+	return ne.nodeInfo.CPUArchitecture()
+}
+
+func (ne *NodeStats) NodeName() string {
+	return ne.nodeInfo.Name()
 }

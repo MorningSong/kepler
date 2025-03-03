@@ -29,21 +29,13 @@ import (
 )
 
 var (
-	SampleDynEnergyValue float64 = 100000 // 100 mJ
+	SampleDynEnergyValue             float64 = 1.0
+	SampleDynEnergyValueInMilliJoule uint64  = uint64(SampleDynEnergyValue) * 1000
 
 	processFeatureNames = []string{
 		config.CPUCycle,
 		config.CPUInstruction,
 		config.CacheMiss,
-		config.CgroupfsMemory,
-		config.CgroupfsKernelMemory,
-		config.CgroupfsTCPMemory,
-		config.CgroupfsCPU,
-		config.CgroupfsSystemCPU,
-		config.CgroupfsUserCPU,
-		config.CgroupfsReadIO,
-		config.CgroupfsWriteIO,
-		config.BlockDevicesIO,
 	}
 	systemMetaDataFeatureNames = []string{"cpu_architecture"}
 	featureNames               = append(processFeatureNames, systemMetaDataFeatureNames...) // to predict node power, we will need the resource usage and metadata metrics
@@ -151,7 +143,7 @@ var _ = Describe("Test Estimate Unit", func() {
 		powers, err := c.GetPlatformPower(false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(powers)).Should(Equal(1))
-		Expect(powers[0]).Should(Equal(SampleDynEnergyValue))
+		Expect(powers[0]).Should(Equal(SampleDynEnergyValueInMilliJoule))
 		quit <- true
 	})
 
@@ -173,7 +165,7 @@ var _ = Describe("Test Estimate Unit", func() {
 		powers, err := c.GetPlatformPower(false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(len(powers)).Should(Equal(len(processFeatureValues)))
-		Expect(powers[0]).Should(Equal(SampleDynEnergyValue))
+		Expect(powers[0]).Should(Equal(SampleDynEnergyValueInMilliJoule))
 		quit <- true
 	})
 	It("Get Node Component Power By Sidecar Estimator", func() {
@@ -196,7 +188,7 @@ var _ = Describe("Test Estimate Unit", func() {
 		// TODO: Fix estimator power model
 		// "The estimator node pkg power estimation is estimating 100 Kilo Joules, " +
 		// 	"which is way to high for the given resource utilization is set to only 2 in all features." +
-		// 	"We are skiping this test until the power model is fixed.",
+		// 	"We are skipping this test until the power model is fixed.",
 		// Expect(powers[0].Pkg).Should(Equal(uint64(100000000)))
 	})
 	It("Get Process Component Power By Sidecar Estimator", func() {
@@ -220,7 +212,7 @@ var _ = Describe("Test Estimate Unit", func() {
 		Expect(len(powers)).Should(Equal(len(processFeatureValues)))
 		// "The estimator node pkg power estimation is estimating 100 Kilo Joules or 0 Joules, " +
 		// 	"which is way to high or too low for the given resource utilization is set to only 1 in all features." +
-		// 	"We are skiping this test until the power model is fixed.",
+		// 	"We are skipping this test until the power model is fixed.",
 		// Expect(powers[0].Pkg).Should(Equal(SampleDynEnergyValue))
 	})
 })

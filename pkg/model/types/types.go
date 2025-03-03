@@ -16,24 +16,18 @@ limitations under the License.
 
 package types
 
-type ModelType int
-type ModelOutputType int
-
-var (
-	ModelOutputTypeConverter = []string{
-		"AbsPower", "DynPower",
-	}
-	ModelTypeConverter = []string{
-		"Ratio", "LinearRegressor", "EstimatorSidecar",
-	}
+type (
+	ModelType       int
+	ModelOutputType int
 )
 
 const (
 	// Power Model types
 	Ratio            ModelType = iota + 1 // estimation happens within kepler without using Model Server
-	LinearRegressor                       // estimation happens within kepler, but pre-trained model parameters are downloaded externally
+	Regressor                             // estimation happens within kepler, but pre-trained model parameters are downloaded externally
 	EstimatorSidecar                      // estimation happens in the sidecar with a loaded pre-trained power model
 )
+
 const (
 	// Power Model Output types
 	// Absolute Power Model (AbsPower): is the power model trained by measured power (including the idle power)
@@ -43,22 +37,48 @@ const (
 	Unsupported
 )
 
-var (
+const (
 	// Define energy source
-	PlatformEnergySource  = "acpi"
-	ComponentEnergySource = "rapl"
+	PlatformEnergySource    = "acpi"
+	ComponentEnergySource   = "intel_rapl"
+	TrainedPowerModelSource = "trained_power_model"
+
+	// KeplerModelServerSync: define regressor trainer name.
+	LinearRegressionTrainer = "SGDRegressorTrainer"
+	LogarithmicTrainer      = "LogarithmicRegressionTrainer"
+	LogisticTrainer         = "LogisticRegressionTrainer"
+	ExponentialTrainer      = "ExponentialRegressionTrainer"
 )
 
+var (
+	WeightSupportedTrainers = []string{
+		LinearRegressionTrainer,
+		LogarithmicTrainer,
+		LogisticTrainer,
+		ExponentialTrainer,
+	}
+	ModelOutputTypeConverter = []string{"AbsPower", "DynPower"}
+	ModelTypeConverter       = []string{"Ratio", "Regressor", "EstimatorSidecar"}
+)
+
+func getModelOutputTypeConverter() []string {
+	return ModelOutputTypeConverter
+}
+
+func getModelTypeConverter() []string {
+	return ModelTypeConverter
+}
+
 func (s ModelOutputType) String() string {
-	if int(s) <= len(ModelOutputTypeConverter) {
-		return ModelOutputTypeConverter[s-1]
+	if int(s) <= len(getModelOutputTypeConverter()) {
+		return getModelOutputTypeConverter()[s-1]
 	}
 	return "unknown"
 }
 
 func (s ModelType) String() string {
-	if int(s) <= len(ModelTypeConverter) {
-		return ModelTypeConverter[s-1]
+	if int(s) <= len(getModelTypeConverter()) {
+		return getModelTypeConverter()[s-1]
 	}
 	return "unknown"
 }
@@ -80,4 +100,12 @@ type ModelConfig struct {
 	NodeFeatureNames            []string
 	SystemMetaDataFeatureNames  []string
 	SystemMetaDataFeatureValues []string
+}
+
+func (c *ModelConfig) SourceURL() string {
+	if c.InitModelURL != "" {
+		return c.InitModelURL
+	}
+
+	return c.InitModelFilepath
 }

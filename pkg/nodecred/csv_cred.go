@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	metric_util "github.com/sustainable-computing-io/kepler/pkg/collector/stats"
+	"github.com/sustainable-computing-io/kepler/pkg/node"
 
 	"k8s.io/klog/v2"
 )
@@ -46,7 +46,7 @@ func (c csvNodeCred) GetNodeCredByNodeName(nodeName, target string) (map[string]
 		cred["redfish_username"] = credMap["redfish_username"]
 		cred["redfish_password"] = credMap["redfish_password"]
 		cred["redfish_host"] = credMap["redfish_host"]
-		if cred["redfish_username"] == "" || cred["redfish_password"] == "" || cred["redfish_host"] == "" {
+		if cred["redfish_host"] == "" {
 			return nil, fmt.Errorf("no credential found")
 		}
 		return cred, nil
@@ -61,7 +61,7 @@ func (c csvNodeCred) IsSupported(info map[string]string) bool {
 	if filePath == "" {
 		return false
 	} else {
-		nodeName := metric_util.GetNodeName()
+		nodeName := node.Name()
 		// read file from filePath
 		userName, password, host, err := readCSVFile(filePath, nodeName)
 		if err != nil {

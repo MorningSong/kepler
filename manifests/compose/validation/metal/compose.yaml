@@ -1,0 +1,191 @@
+name: metal
+
+include:
+  - path:
+      - ../../monitoring/compose.yaml
+      - ./override.yaml
+
+services:
+  kepler-metal:
+    build:
+      context: ../../../../
+      dockerfile: build/Dockerfile
+      args:
+        INSTALL_DCGM: false
+        INSTALL_HABANA: false
+
+    ports:
+      # NOTE: use 9888 to keep the host 8888 port free for any local testing
+      # e.g. sudo ./bin/kepler
+      - 9188:8888
+    privileged: true
+    pid: host
+
+    volumes:
+      - type: bind
+        source: /proc
+        target: /proc
+      - type: bind
+        source: /sys
+        target: /sys
+      - type: bind
+        source: ./kepler/etc/kepler
+        target: /etc/kepler
+
+      # NOTE: use the weights from the local repo
+      - type: bind
+        source: ../../../../data
+        target: /var/lib/kepler/data
+
+    entrypoint: [/usr/bin/bash, -c]
+
+    command:
+      - |
+        set -x;
+        /usr/bin/kepler \
+          -address "0.0.0.0:8888" \
+          -v "8" \
+          -enable-gpu=false
+    networks:
+      - kepler-network
+
+    healthcheck:
+      test: curl -f http://localhost:8888/metrics || exit 1
+      interval: ${HEALTHCHECK_INTERVAL:-50s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-30s}
+      retries: ${HEALTHCHECK_RETRIES:-3}
+      start_period: ${HEALTHCHECK_START_PERIOD:-1m}
+
+    cap_add:
+      - ALL
+
+
+  scaphandre:
+    # image: hubblo/scaphandre
+    build:
+      context: ../
+      dockerfile: dockerfiles/Dockerfile.scaphandre
+    privileged: true
+    ports:
+      - 8880:8080
+    volumes:
+      - type: bind
+        source: /proc
+        target: /proc
+      - type: bind
+        source: /sys/class/powercap
+        target: /sys/class/powercap
+    command: [prometheus]
+    networks:
+      - scaph-network
+
+    healthcheck:
+      test: curl -f http://localhost:8080/metrics || exit 1
+      interval: ${HEALTHCHECK_INTERVAL:-50s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-30s}
+      retries: ${HEALTHCHECK_RETRIES:-3}
+      start_period: ${HEALTHCHECK_START_PERIOD:-1m}
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    pid: host
+    ports:
+      - 9100:9100
+    volumes:
+      - type: bind
+        source: /proc
+        target: /host/proc
+      - type: bind
+        source: /sys
+        target: /host/sys
+      - type: bind
+        source: /
+        target: /rootfs
+    command:
+      # - --log.level=debug
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.cpufreq
+      - --collector.perf
+      - --collector.perf.cpus=0-19 # specify range of all cpus
+      - --collector.perf.software-profilers=ContextSwitch
+      - --collector.meminfo
+      - --collector.rapl
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    user: root
+    cap_add: # Add capabilities for perf collection.
+      - SYS_ADMIN
+      - SYS_PTRACE
+    networks:
+      - node-exporter-network
+
+  libvirt-exporter:
+    image: quay.io/osism/prometheus-libvirt-exporter:2024.1
+    ports:
+      - 9177:9177
+    volumes:
+      - type: bind
+        source: /run
+        target: /host/run
+
+    entrypoint: [/usr/bin/bash, -c]
+
+    command:
+      - |
+        set -x;
+        /prometheus-libvirt-exporter/prometheus-libvirt-exporter \
+        --libvirt.uri="/host/run/libvirt/libvirt-sock" \
+        --log.level=debug
+    privileged: true
+    networks:
+      - libvirt-exporter-network
+
+  process-exporter:
+    image: ncabatoff/process-exporter
+    privileged: true
+    ports:
+      - 9256:9256
+    command:
+      - --procfs=/host/proc
+      - --config.path=/config/process-exporter.yaml
+    volumes:
+      - ../config/process-exporter.yaml:/config/process-exporter.yaml
+      - /proc:/host/proc:ro
+
+    networks:
+      - process-exporter-network
+
+networks:
+  scaph-network:
+  kepler-network:
+  node-exporter-network:
+  libvirt-exporter-network:
+  process-exporter-network:
+
+  #
+  #
+  #  NOTE: To allow access to VM from prometheus container
+  #  external network named - virt-net must be created using
+  #  the following command
+  #
+  # use:
+  # ❯ ip addr show virbr0
+  #
+  #  │ 17: virbr0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
+  #  │  link/ether 58:52:00:a6:77:2f brd ff:ff:ff:ff:ff:ff
+  #  │  inet 192.168.124.1/24 brd 192.168.124.255 scope global virbr0
+  #  │  valid_lft forever preferred_lft forever
+  #
+  # look for `inet` in the output and use that for the subnet in the next command
+  #
+  #  docker network create \
+  #    --driver=macvlan \
+  #    --subnet=192.168.124.0/24 \
+  #    -o parent=virbr0 virt-net
+  #
+  virt-net:
+    name: virt-net
+    external: true
